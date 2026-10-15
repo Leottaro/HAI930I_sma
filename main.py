@@ -27,11 +27,13 @@ from __future__ import annotations
 import asyncio
 import getpass
 import json
+import logging
 import math
 import os
 import re
 import shutil
 import sys
+import tempfile
 import textwrap
 import time
 from dataclasses import dataclass, field
@@ -45,12 +47,19 @@ from google.adk.planners import BuiltInPlanner
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+ENV_FILE = Path(__file__).with_name(".env")
+
 try:  # optional: load GOOGLE_API_KEY from a .env file
     from dotenv import load_dotenv
 
-    load_dotenv()
+    load_dotenv(ENV_FILE)
 except ImportError:
     pass
+
+# ADK/genai log a full traceback for every failed model call, even when we
+# retry it: Brain reports failures itself, in one line.
+logging.getLogger("google_adk").setLevel(logging.CRITICAL)
+logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 C, D = Action.C, Action.D
 
@@ -60,12 +69,12 @@ C, D = Action.C, Action.D
 # ════════════════════════════════════════════════════════════════════════════
 @dataclass
 class Config:
-    model: Any = "gemini-2.5-flash"
+    model: Any = "gemini-3.1-flash-lite"
     temperature: float = 0.2
-    turns: int = 30  # rounds per match (keep it small: 1 LLM call per round)
+    turns: int = 10  # rounds per match (keep it small: 1 LLM call per round)
     repetitions: int = 1  # matches per pairing in a tournament
     seed: int = 1
-    mapek_every: int = 5  # run the MAPE-K loop every N rounds
+    mapek_every: int = 10  # run the MAPE-K loop every N rounds
     window: int = 5  # Monitor: size of the sliding window (rounds)
     poor_threshold: float = 1.5  # avg points/round under which we flag "POOR"
     history_shown: int = 10  # rounds of history shown to the move agent
@@ -154,9 +163,18 @@ class Runtime:
         if STRATEGIES_FILE.exists():
             try:
                 saved = json.loads(STRATEGIES_FILE.read_text(encoding="utf-8"))
-                if len(saved) >= MIN_STRATEGIES:
+                valid = isinstance(saved, dict) and all(
+                    isinstance(n, str) and n.strip()
+                    and isinstance(s, dict)
+                    and isinstance(s.get("summary"), str)
+                    and isinstance(s.get("prompt"), str) and s["prompt"].strip()
+                    for n, s in saved.items()
+                )
+                if valid and len(saved) >= MIN_STRATEGIES:
                     self.strategies = saved
-            except (OSError, json.JSONDecodeError):
+                else:
+                    print("  ! llm_strategies.json is invalid, using defaults")
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 print("  ! could not read llm_strategies.json, using defaults")
         if self.cfg.initial_strategy not in self.strategies:
             self.cfg.initial_strategy = next(iter(self.strategies))
@@ -325,6 +343,61 @@ class LLMUnavailable(RuntimeError):
 APP, USER = "axelrod_mapek", "player"
 
 
+def http_code(e: Exception) -> int | None:
+    code = getattr(e, "code", None)  # set by google.genai's APIError
+    return code if isinstance(code, int) else None
+
+
+def retry_delay(e: Exception, attempt: int) -> float:
+    """Seconds to wait before retrying a failed call (honours the API's hint)."""
+    m = re.search(r"retry in ([\d.]+)\s*s", str(e)) or re.search(
+        r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", str(e)
+    )
+    if m:
+        return min(float(m.group(1)) + 1, 90)
+    code = http_code(e)
+    if code == 429:  # rate limited
+        return 15 * (attempt + 1)
+    if code in (500, 502, 503, 504):  # overloaded
+        return 5 * (attempt + 1)
+    return 1.5 * (attempt + 1)
+
+
+def quota_info(e: Exception) -> dict | None:
+    """Which quota a 429 hit, e.g. {"per": "day", "what": "requests", "limit": 20, "model": ...}."""
+    if http_code(e) != 429:
+        return None
+    text = str(e)
+    qid = re.search(r"quotaId['\"]?:\s*['\"]([^'\"]+)", text)
+    qid = qid.group(1) if qid else ""
+    per = "day" if "PerDay" in qid else "minute" if "PerMinute" in qid else None
+    what = "tokens" if "Token" in qid else "requests"
+    limit = re.search(r"limit: (\d+)", text)
+    model = re.search(r"model: ([\w.-]+)", text)
+    return {
+        "per": per,
+        "what": what,
+        "limit": int(limit.group(1)) if limit else None,
+        "model": model.group(1) if model else str(RT.cfg.model),
+        "free": "FreeTier" in qid or "free_tier" in text,
+    }
+
+
+def short_error(e: Exception) -> str:
+    q = quota_info(e)
+    if q:
+        tier = "free tier" if q["free"] else "your plan"
+        if q["limit"] == 0:
+            return f"429: {q['model']} is not available on the {tier} (paid model)"
+        per = f"/{q['per']}" if q["per"] else ""
+        limit = f"{q['limit']} {q['what']}{per}" if q["limit"] is not None else "quota"
+        return f"429: {limit} exceeded for {q['model']} ({tier})"
+    m = re.search(r"""'message':\s*(['"])(.*?)\1""", str(e))
+    msg = m.group(2).replace("\\n", " ") if m else str(e).strip().splitlines()[-1] if str(e).strip() else ""
+    code = http_code(e)
+    return f"{type(e).__name__}{f' {code}' if code else ''}: {msg[:300]}"
+
+
 class Brain:
     def __init__(self) -> None:
         self.loop = asyncio.new_event_loop()  # one loop for the whole program
@@ -339,8 +412,9 @@ class Brain:
             slug = re.sub(r"\W", "_", f"{kind}_{name}")
             kwargs: dict[str, Any] = {}
             model = RT.cfg.model
-            if isinstance(model, str) and "2.5" in model:
+            if isinstance(model, str) and "2.5-flash" in model:
                 # No hidden "thinking" tokens: faster and cheaper for a live demo.
+                # (2.5 Pro and Gemini 3+ reject a zero budget.)
                 kwargs["planner"] = BuiltInPlanner(
                     thinking_config=types.ThinkingConfig(thinking_budget=0)
                 )
@@ -362,15 +436,25 @@ class Brain:
         session = await runner.session_service.create_session(app_name=APP, user_id=USER)
         message = types.Content(role="user", parts=[types.Part(text=text)])
         out = ""
-        async for ev in runner.run_async(
-            user_id=USER, session_id=session.id, new_message=message
-        ):
-            if ev.is_final_response() and ev.content and ev.content.parts:
-                out += "".join(p.text for p in ev.content.parts if p.text and not p.thought)
-        await runner.session_service.delete_session(
-            app_name=APP, user_id=USER, session_id=session.id
-        )
+        try:
+            async for ev in runner.run_async(
+                user_id=USER, session_id=session.id, new_message=message
+            ):
+                if ev.is_final_response() and ev.content and ev.content.parts:
+                    out += "".join(p.text for p in ev.content.parts if p.text and not p.thought)
+        finally:
+            await runner.session_service.delete_session(
+                app_name=APP, user_id=USER, session_id=session.id
+            )
         return out.strip()
+
+    def _cancel_pending(self) -> None:
+        """After a Ctrl-C, don't leave a half-done call to resume later."""
+        tasks = asyncio.all_tasks(self.loop)
+        for t in tasks:
+            t.cancel()
+        if tasks:
+            self.loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
 
     def ask(self, runner: InMemoryRunner, text: str) -> str | None:
         err: Exception | None = None
@@ -380,29 +464,51 @@ class Brain:
                 self.calls += 1
                 self.failures = 0
                 return out
+            except KeyboardInterrupt:
+                self._cancel_pending()
+                raise
             except Exception as e:  # network, quota, bad key ...
                 err = e
+                code = http_code(e)
+                if code is not None and 400 <= code < 500 and code not in (408, 429):
+                    # Bad key, unknown model, invalid request: retrying won't help.
+                    raise LLMUnavailable(short_error(e)) from e
+                q = quota_info(e)
+                if q and (q["per"] == "day" or q["limit"] == 0):
+                    # Daily quota used up / paid-only model: waiting a minute won't help.
+                    hint = (
+                        "pick a free model in Settings"
+                        if q["limit"] == 0
+                        else "daily quota resets at midnight Pacific time; pick another model in Settings"
+                    )
+                    raise LLMUnavailable(f"{short_error(e)}: {hint}") from e
                 if attempt < 2:
-                    rate_limited = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                    time.sleep(12 * (attempt + 1) if rate_limited else 1.5 * (attempt + 1))
+                    delay = retry_delay(e, attempt)
+                    clear_status()
+                    print(dim(f"  ! LLM call failed ({short_error(e)}), retry in {delay:.0f}s"))
+                    time.sleep(delay)
         self.failures += 1
-        self.last_error = f"{type(err).__name__}: {err}"
+        self.last_error = short_error(err)
+        clear_status()
+        print(yellow(f"  ! LLM call given up ({self.last_error})"))
         if self.failures >= 3:
             raise LLMUnavailable(self.last_error)
         return None
 
 
 def parse_json(text: str | None) -> dict:
+    """First JSON object found in the reply (models like to add prose/fences)."""
     if not text:
         return {}
-    a, b = text.find("{"), text.rfind("}")
-    if a < 0 or b <= a:
-        return {}
-    try:
-        data = json.loads(text[a : b + 1])
-        return data if isinstance(data, dict) else {}
-    except json.JSONDecodeError:
-        return {}
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            data, _ = decoder.raw_decode(text, m.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -505,9 +611,12 @@ def ui_mapek(round_no: int, mon: dict, ana: dict, plan: dict, old: str, new: str
         f"last {mon['window']} rounds: {mon['my_avg_window']} pts/round vs "
         f"{mon['opp_avg_window']} for opp, opp cooperated {int(mon['opp_coop_window'] * 100)}%  → {alert}",
     )
-    note(cyan("A"), f"{ana.get('opponent_profile', '?')}. {ana.get('insight', '')}")
+    if ana:
+        note(cyan("A"), f"{ana.get('opponent_profile') or '?'}. {ana.get('insight') or ''}")
+    else:
+        note(cyan("A"), dim("analysis unavailable"))
     arrow = f"{old} → {bold(new)}" if new != old else f"keep {bold(old)}"
-    note(cyan("P/E"), f"{arrow}  {dim(str(plan.get('reason', '')))}")
+    note(cyan("P/E"), f"{arrow}  {dim(str(plan.get('reason') or ''))}")
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -611,7 +720,7 @@ class LLMPlayer(axl.Player):
         raw = self._llm("analyze", "analyzer", ANALYZE_INSTRUCTION, json.dumps(payload))
         ana = parse_json(raw)
         if ana:
-            self.kb.profile = str(ana.get("opponent_profile", self.kb.profile))
+            self.kb.profile = str(ana.get("opponent_profile") or self.kb.profile)
             self.kb.analyses.append(ana)
         return ana
 
@@ -628,8 +737,9 @@ class LLMPlayer(axl.Player):
         return parse_json(raw)
 
     def _execute_plan(self, mon: dict, ana: dict, plan: dict) -> None:
-        old, wanted = self.current, str(plan.get("strategy", self.current))
-        new = wanted if wanted in RT.strategies else old
+        old, wanted = self.current, str(plan.get("strategy") or self.current).strip()
+        by_key = {n.casefold(): n for n in RT.strategies}
+        new = by_key.get(wanted.casefold(), old)
         if new != old:
             self.rec.switches.append((mon["round"], old, new, str(plan.get("reason", ""))))
             self.current = new
@@ -654,9 +764,14 @@ class LLMPlayer(axl.Player):
         instr = move_instruction(RT.strategies[self.current]["prompt"])
         raw = self._llm("move", self.current, instr, "\n".join(lines))
         if raw:
-            m = re.search(r"\b([CD])\b", raw.upper()) or re.match(r"\s*([CD])", raw.upper())
+            up = raw.upper()
+            m = (
+                re.search(r"\b([CD])\b", up)
+                or re.match(r"\W*([CD])", up)
+                or re.search(r"\b(COOPERATE|DEFECT)", up)
+            )
             if m:
-                return C if m.group(1) == "C" else D
+                return C if m.group(1)[0] == "C" else D
         # Fallback (LLM hiccup): tit-for-tat, so the match can continue.
         return opponent.history[-1] if t else C
 
@@ -670,12 +785,14 @@ def ensure_ready() -> bool:
         if not api_key:
             print(red("  ✗ No API key provided.\n"))
             return False
-        env_path = Path(".env")
-        existing = env_path.read_text() if env_path.exists() else ""
-        lines = [line for line in existing.splitlines() if not line.startswith("GOOGLE_API_KEY=")]
-        lines.append(f"GOOGLE_API_KEY={api_key}")
-        env_path.write_text("\n".join(lines) + "\n")
         os.environ["GOOGLE_API_KEY"] = api_key
+        try:
+            existing = ENV_FILE.read_text() if ENV_FILE.exists() else ""
+            lines = [line for line in existing.splitlines() if not line.startswith("GOOGLE_API_KEY=")]
+            lines.append(f"GOOGLE_API_KEY={api_key}")
+            ENV_FILE.write_text("\n".join(lines) + "\n")
+        except OSError as e:
+            print(yellow(f"  ! could not save the key to {ENV_FILE} ({e}), using it for this session only"))
     if RT.brain is None:
         RT.brain = Brain()
     RT.brain.failures = 0
@@ -702,6 +819,10 @@ def run_1v1(opp_cls: type) -> None:
         clear_status()
         print(red(f"\n  ✗ LLM unreachable, match aborted: {e}"))
         return
+    except KeyboardInterrupt:
+        clear_status()
+        print(yellow("\n  ✗ match interrupted"))
+        return
     print(dim(f"\n  LLM calls: {RT.brain.calls}"))
 
 
@@ -720,12 +841,20 @@ def run_tournament(opp_classes: list[type]) -> None:
     tournament = axl.Tournament(
         players, turns=cfg.turns, repetitions=cfg.repetitions, edges=edges, seed=cfg.seed
     )
-    try:
-        results = tournament.play(progress_bar=False)
-    except LLMUnavailable as e:
-        clear_status()
-        print(red(f"\n  ✗ LLM unreachable, tournament aborted: {e}"))
-        return
+    # Axelrod's own temp file is not removed when a match raises: use ours.
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            results = tournament.play(
+                progress_bar=False, filename=str(Path(tmp) / "interactions.csv")
+            )
+        except LLMUnavailable as e:
+            clear_status()
+            print(red(f"\n  ✗ LLM unreachable, tournament aborted: {e}"))
+            return
+        except KeyboardInterrupt:
+            clear_status()
+            print(yellow("\n  ✗ tournament interrupted"))
+            return
     show_results(results)
 
 
@@ -759,7 +888,7 @@ def pick_from(title: str, names: list[str], many: bool = False) -> list[int]:
         if many and not raw:
             return list(range(len(names)))
         try:
-            picks = [int(x) - 1 for x in re.split(r"[,\s]+", raw) if x]
+            picks = list(dict.fromkeys(int(x) - 1 for x in re.split(r"[,\s]+", raw) if x))
             if picks and all(0 <= p < len(names) for p in picks) and (many or len(picks) == 1):
                 return picks
         except ValueError:
@@ -816,7 +945,7 @@ def menu_lab() -> None:
                 RT.save_strategies()
         elif choice == "a":
             name = ask("  Name: ")
-            if name and name not in RT.strategies:
+            if name and name.casefold() not in {n.casefold() for n in RT.strategies}:
                 prompt = read_multiline("  Prompt (tell the LLM when to play C or D)")
                 if prompt:
                     RT.strategies[name] = {"summary": ask("  One-line summary: ") or name, "prompt": prompt}
@@ -852,11 +981,10 @@ def menu_settings() -> None:
         raw = ask("  Change which? (Enter = back) > ")
         if not raw:
             return
-        try:
-            key = keys[int(raw) - 1]
-        except (ValueError, IndexError):
+        if not raw.isdigit() or not 1 <= int(raw) <= len(keys):
             print("  invalid choice")
             continue
+        key = keys[int(raw) - 1]
         cur = getattr(cfg, key)
         val = ask(f"  New value for '{key}' > ")
         try:
@@ -868,6 +996,12 @@ def menu_settings() -> None:
                 new = val.lower() in ("y", "yes", "true", "1", "on")
             elif isinstance(cur, (int, float)):
                 new = type(cur)(val)
+                if not math.isfinite(new):
+                    raise ValueError("must be a finite number")
+                if key == "temperature" and not 0 <= new <= 2:
+                    raise ValueError("must be between 0 and 2")
+                if key == "seed" and not 0 <= new < 2**32:
+                    raise ValueError("must be between 0 and 2**32 - 1")
                 if new <= 0 and key not in ("seed", "temperature"):
                     raise ValueError("must be positive")
             else:

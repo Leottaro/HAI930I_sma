@@ -25,7 +25,7 @@ python -m venv .venv
 You can install and run **without activating** the venv, by calling the executables inside it directly:
 
 ```sh
-.venv/bin/pip install axelrod google-adk
+.venv/bin/pip install axelrod google-adk python-dotenv
 .venv/bin/python main.py
 ```
 
@@ -33,7 +33,7 @@ Or **activate** the venv once, then use plain `pip` / `python`. The activation s
 
 ```sh
 source .venv/bin/activate        # Linux / macOS (bash, zsh)
-pip install axelrod google-adk
+pip install axelrod google-adk python-dotenv
 python main.py
 deactivate                       # when you are done
 ```
@@ -55,11 +55,13 @@ Either export it:
 export GOOGLE_API_KEY="your-key"
 ```
 
-or create a `.env` file next to `main.py` (loaded automatically):
+or create a `.env` file next to `main.py` (loaded automatically when `python-dotenv` is installed):
 
 ```
 GOOGLE_API_KEY=your-key
 ```
+
+If no key is found, the program asks for it (hidden input) at the first match and saves it to that same `.env` file.
 
 > Add `.venv/` and `.env` to your `.gitignore` so neither ends up in git.
 
@@ -68,6 +70,48 @@ GOOGLE_API_KEY=your-key
 ```sh
 python main.py
 ```
+
+Then open **4) Settings → 1) Gemini model** and pick a model from [Choosing a model](#choosing-a-model): the default `gemini-2.5-flash` is no longer available to recently created API keys.
+
+---
+
+## Choosing a model
+
+Any Gemini API text model works; set it in **Settings → Gemini model**. "Free" means the model has a free tier on the Gemini API: you pay nothing, but requests per minute and per day are limited (about 15 requests/minute for `gemini-3.5-flash-lite`, for example), and Google may use the data to improve its products. "Paid" means the model needs a key with billing enabled: on a free key it fails right away with `429 RESOURCE_EXHAUSTED ... limit: 0`.
+
+Prices are the standard paid rates in USD per 1M text tokens (input / output), from the [official pricing page](https://ai.google.dev/gemini-api/docs/pricing) in October 2026. One call takes a few hundred tokens, so a 30-round match (about 42 calls) costs a fraction of a cent on any Flash model. The latencies were measured once per model on a free key and vary a lot with server load.
+
+**Free tier available**
+
+| Model | Latency per call | Paid price (in / out) | Notes |
+|---|---|---|---|
+| `gemini-3.1-flash-lite` | ~1-2 s | $0.25 / $1.50 | **Recommended for demos**: fastest, follows the strategies and returns valid JSON for the MAPE-K stages |
+| `gemini-3.5-flash-lite` | ~3 s | $0.30 / $2.50 | Good default too |
+| `gemini-flash-lite-latest` | ~5 s | same as the Flash-Lite it points to | Alias that follows the newest Flash-Lite |
+| `gemini-3.5-flash` | ~5 s | not listed | Stronger reasoning in the Analyze / Plan stages |
+| `gemini-3.8-flash` | ~8 s | $0.75 / $3.75 (from Jan 1, 2027: $1.50 / $7.50) | Most capable Flash, but often `503 UNAVAILABLE` (high demand) on the free tier |
+| `gemini-3.6-flash` | ~20 s | $0.75 / $3.75 (from Jan 1, 2027: $1.50 / $7.50) | Slow: thinks before every answer |
+| `gemini-3-flash-preview` | ~20 s | $0.50 / $3.00 | Slow, preview model |
+| `gemma-4-26b-a4b-it` | ~6 s | no paid tier | Open model (Gemma), free only |
+| `gemma-4-31b-it` | ~30 s | no paid tier | Open model (Gemma), free only, slow |
+
+**Paid only**
+
+| Model | Paid price (in / out) | Notes |
+|---|---|---|
+| `gemini-3.1-pro-preview` | $2.00 / $12.00 (prompts ≤ 200k tokens) | Best reasoning, slower |
+| `gemini-4-argon` | $2.00 / $10.00 (from Dec 1, 2026: $4.00 / $20.00) | Newest model |
+| `gemini-pro-latest` | same as the Pro it points to | Alias that follows the newest Pro |
+
+**No longer available to new API keys** (`404 NOT_FOUND`): `gemini-2.5-flash` (the default), `gemini-2.5-flash-lite`, `gemini-2.5-pro`. Older keys may still use them.
+
+The list of models your key can see changes over time. To print it:
+
+```sh
+.venv/bin/python -c "from dotenv import load_dotenv; load_dotenv('.env'); from google import genai; c = genai.Client(); [print(m.name) for m in c.models.list() if 'generateContent' in (m.supported_actions or [])]"
+```
+
+Your current limits and usage are shown at <https://ai.dev/rate-limit>.
 
 ---
 
@@ -78,7 +122,7 @@ python main.py
 | **1) 1v1 match** | The LLM against one classic strategy, shown **round by round**, with the MAPE-K trace at every cycle. |
 | **2) Tournament** | The LLM plus the classic strategies you pick, as a round robin. Ends with a ranking and a per-opponent table. |
 | **3) Strategy lab** | View, edit, add or delete the LLM prompt strategies. Changes are saved to `llm_strategies.json`. At least 3 strategies must remain. |
-| **4) Settings** | Rounds per match, MAPE-K period, "poor performance" threshold, model, starting strategy, adaptive on/off... |
+| **4) Settings** | Rounds per match, MAPE-K period, "poor performance" threshold, model, starting strategy, adaptive on/off... Invalid values are rejected (temperature must be between 0 and 2, the seed between 0 and 2³²−1, counts must be positive). |
 | **5) Quit** | |
 
 Opponents (all deterministic): Cooperator, Defector, Tit For Tat, Tit For 2 Tats, Suspicious Tit For Tat, Grudger, Alternator, Prober, Win-Stay Lose-Shift. To add one, add its Axelrod class to the `OPPONENTS` dict in `main.py`.
@@ -137,7 +181,7 @@ After each match you get a timeline and a verdict:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `model` | `gemini-2.5-flash` | Gemini model used by every agent |
+| `model` | `gemini-2.5-flash` | Gemini model used by every agent. Unavailable to new keys: see [Choosing a model](#choosing-a-model) |
 | `temperature` | `0.2` | Sampling temperature |
 | `turns` | `30` | Rounds per match |
 | `repetitions` | `1` | Matches per pairing in a tournament |
@@ -157,10 +201,11 @@ Payoffs are Axelrod's defaults: both cooperate = 3 each, both defect = 1 each, d
 ## Things to know
 
 - **Cost and speed**: the LLM makes one call per round, plus 2 calls per MAPE-K cycle. The program prints an estimate before each run. Matches between classic strategies are free.
-- **Rate limits**: the free Gemini tier has a low per-minute limit. Use fewer rounds or a paid key. Failed calls are retried with backoff, and a run aborts after 3 consecutive failures instead of silently playing something else.
+- **Rate limits and errors**: the free Gemini tier has a low per-minute limit. Use fewer rounds, a lighter model or a paid key. Each failed call is reported on one line (`! LLM call failed (...), retry in Ns`) and retried up to 3 times: on a `429` the message says which quota was hit (e.g. `15 requests/minute exceeded for gemini-3.5-flash-lite (free tier)`) and the program waits as long as the API asks. On a `503` (model overloaded) it waits a few seconds. A run aborts after 3 consecutive failed calls instead of silently playing something else. An error that retrying cannot fix (invalid key, unknown or unavailable model) aborts the run immediately with the API's message. So does a used-up daily quota or a paid-only model (`limit: 0`): waiting a minute would not help, so switch model in Settings.
+- **Interrupting**: `Ctrl-C` during a match or a tournament stops it and returns to the menu. `Ctrl-C` at the menu quits.
 - **Mutual defection can be optimal**: against an unconditional defector, 1 point per round is the best anyone can get. The `POOR` flag is only a score threshold, so the Analyze stage is told to judge performance relative to what is achievable.
 - **LLM vs itself** is off by default because it doubles the cost.
-- **Fallback**: if a single move call fails, the player falls back to tit-for-tat for that round so the match can continue.
+- **Fallback**: if a single move call fails or its answer has neither `C` nor `D` in it, the player falls back to tit-for-tat for that round so the match can continue. The Analyze / Plan replies may come with extra text or code fences around the JSON, and the strategy name is matched case-insensitively. If the Plan names an unknown strategy, the current one is kept.
 
 ---
 
@@ -169,5 +214,5 @@ Payoffs are Axelrod's defaults: both cooperate = 3 each, both defect = 1 each, d
 | File | Purpose |
 |---|---|
 | `main.py` | The whole program: config, prompt strategies, ADK agents, MAPE-K player, menus |
-| `llm_strategies.json` | Created when you edit strategies in the lab. Delete it (or use "reset") to get the defaults back |
-| `.env` | Optional, holds `GOOGLE_API_KEY` |
+| `llm_strategies.json` | Created when you edit strategies in the lab. Delete it (or use "reset") to get the defaults back. If it is malformed, the defaults are used and a warning is printed |
+| `.env` | Optional, holds `GOOGLE_API_KEY`. Read from, and written to, the folder of `main.py` |
