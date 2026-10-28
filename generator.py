@@ -20,9 +20,12 @@ from opponents import OPPONENTS
 from runtime import RT
 from terminal import ask, bold, clear_status, cyan, dim, yellow
 
-# Settings that can be swept, in the order they are asked
-# (repetitions / llm_self_play are tournament-only: every generated run is a 1v1)
-NUMERIC_KEYS = ["turns", "mapek_every", "window", "poor_threshold", "history_shown", "temperature", "seed"]
+# Settings that can be swept, in the order they are asked (with model,
+# initial_strategy, adaptive and repetitions, which have their own prompts).
+# Everything else keeps its value from Settings.
+LLM_KEYS = ["temperature", "turns"]
+MAPEK_KEYS = ["mapek_every", "window", "poor_threshold"]
+FIXED_KEYS = ["history_shown", "seed"]
 MAX_VALUES = 1000  # per parameter, so a typo like 0:1:0.0001 doesn't explode
 DEFAULT_SECONDS_PER_CALL = 2.0  # used for the estimate until a call has been timed
 
@@ -90,10 +93,12 @@ def ask_adaptive() -> list[bool]:
 
 
 def ask_repeats() -> int:
+    """`repetitions`, here: how many matches are played for each combination."""
+    cur = RT.cfg.repetitions
     while True:
-        raw = ask(f"  {'repeat each combination N times':<44} [Enter = 1] > ")
+        raw = ask(f"  {'repetitions (matches per combination)':<44} [Enter = {cur}] > ")
         if not raw:
-            return 1
+            return cur
         if raw.isdigit() and int(raw) >= 1:
             return int(raw)
         print("  must be a positive integer")
@@ -145,19 +150,28 @@ def menu_generator() -> None:
         "LLM base strategies:", [f"{n} — {s['summary']}" for n, s in RT.strategies.items()], many=True
     )
 
-    print(f"\n{bold('Settings')}  {dim(VALUES_HINT)}")
+    print(f"\n{bold('LLM / match settings')}  {dim(VALUES_HINT)}")
     axes: dict[str, list[Any]] = {
         "opponent": opponents,
         "initial_strategy": [strategies[i] for i in picks],
         "model": ask_models(),
     }
-    for key in NUMERIC_KEYS:
+    for key in LLM_KEYS:
         axes[key] = ask_numeric(key)
-    axes["adaptive"] = ask_adaptive()
     repeats = ask_repeats()
+    print(f"\n{bold('MAPE-K settings')}")
+    axes["adaptive"] = ask_adaptive()
+    for key in MAPEK_KEYS:
+        axes[key] = ask_numeric(key)
+    for key in FIXED_KEYS:  # not swept: shown in the plan as fixed values
+        axes[key] = [getattr(RT.cfg, key)]
 
     keys = list(axes)
-    runs = [dict(zip(keys, combo)) for combo in itertools.product(*axes.values()) for _ in range(repeats)]
+    runs = [
+        {**dict(zip(keys, combo)), "repetitions": repeats}  # saved in each session's config
+        for combo in itertools.product(*axes.values())
+        for _ in range(repeats)
+    ]
     costs = [llm_calls(replace(RT.cfg, **{k: v for k, v in r.items() if k != "opponent"})) for r in runs]
     show_plan(axes, repeats, len(runs), sum(costs))
     if ask(f"\n  Play these {len(runs)} matches? [y/N] > ").lower() not in ("y", "yes"):
