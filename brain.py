@@ -13,6 +13,7 @@ from google.adk.planners import BuiltInPlanner
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+from config import FREE_MODELS
 from runtime import RT
 from terminal import clear_status, dim, yellow
 
@@ -91,6 +92,7 @@ class Brain:
         self.seconds = 0.0  # time spent in successful calls (retries included): for estimates
         self.failures = 0  # consecutive failed calls
         self.last_error = ""
+        self.exhausted: set[str] = set()  # models whose daily quota is used up (this program run)
 
     def runner(self, kind: str, name: str, instruction: str) -> InMemoryRunner:
         key = (kind, name, instruction, str(RT.cfg.model), RT.cfg.temperature)
@@ -142,10 +144,33 @@ class Brain:
         if tasks:
             self.loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
 
-    def ask(self, runner: InMemoryRunner, text: str) -> str | None:
+    def switch_model(self, reason: str) -> bool:
+        """Mark the current model as used up and move RT.cfg to the next free one.
+
+        False when auto-switching is off or every model of FREE_MODELS is used up.
+        """
+        cur = RT.cfg.model
+        if not RT.cfg.auto_switch_model or not isinstance(cur, str):
+            return False
+        self.exhausted.add(cur)
+        nxt = next((m for m in FREE_MODELS if m not in self.exhausted), None)
+        if nxt is None:
+            return False
+        clear_status()
+        print(yellow(f"  ! {reason}: switching to {nxt}"))
+        RT.cfg.model = nxt
+        return True
+
+    def ask(self, kind: str, name: str, instruction: str, text: str) -> str | None:
         err: Exception | None = None
         t0 = time.monotonic()
-        for attempt in range(3):
+        attempt = 0
+        while attempt < 3:
+            if RT.cfg.model in self.exhausted and RT.cfg.auto_switch_model:
+                # e.g. the data generator set it back: don't spend a request to learn it again
+                if not self.switch_model(f"{RT.cfg.model} already used up today"):
+                    raise LLMUnavailable("every free model is used up for today (quota resets at midnight Pacific time)")
+            runner = self.runner(kind, name, instruction)
             try:
                 out = self.loop.run_until_complete(self._ask(runner, text))
                 self.calls += 1
@@ -158,23 +183,31 @@ class Brain:
             except Exception as e:  # network, quota, bad key ...
                 err = e
                 code = http_code(e)
+                q = quota_info(e)
+                # Daily quota used up, paid-only model, unknown model: this model is
+                # done for today, but another free one may still answer (same attempt).
+                if (code == 404 or (q and (q["per"] == "day" or q["limit"] == 0))) and self.switch_model(
+                    short_error(e)
+                ):
+                    continue
                 if code is not None and 400 <= code < 500 and code not in (408, 429):
                     # Bad key, unknown model, invalid request: retrying won't help.
                     raise LLMUnavailable(short_error(e)) from e
-                q = quota_info(e)
                 if q and (q["per"] == "day" or q["limit"] == 0):
                     # Daily quota used up / paid-only model: waiting a minute won't help.
-                    hint = (
-                        "pick a free model in Settings"
-                        if q["limit"] == 0
-                        else "daily quota resets at midnight Pacific time; pick another model in Settings"
-                    )
+                    if q["limit"] == 0:
+                        hint = "pick a free model in Settings"
+                    elif RT.cfg.auto_switch_model:
+                        hint = "every free model is used up too; quota resets at midnight Pacific time"
+                    else:
+                        hint = "daily quota resets at midnight Pacific time; pick another model in Settings"
                     raise LLMUnavailable(f"{short_error(e)}: {hint}") from e
                 if attempt < 2:
                     delay = retry_delay(e, attempt)
                     clear_status()
                     print(dim(f"  ! LLM call failed ({short_error(e)}), retry in {delay:.0f}s"))
                     time.sleep(delay)
+                attempt += 1
         self.failures += 1
         self.last_error = short_error(err)
         clear_status()
@@ -182,7 +215,6 @@ class Brain:
         if self.failures >= 3:
             raise LLMUnavailable(self.last_error)
         return None
-
 
 def parse_json(text: str | None) -> dict:
     """First JSON object found in the reply (models like to add prose/fences)."""

@@ -39,6 +39,7 @@ class MatchRecord:
     length: int | None
     rounds: list[Round] = field(default_factory=list)
     switches: list[tuple[int, str, str, str]] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)  # models that answered, in order
 
     def total(self) -> tuple[int, int]:
         return sum(r.mine for r in self.rounds), sum(r.theirs for r in self.rounds)

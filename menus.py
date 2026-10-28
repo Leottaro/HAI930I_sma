@@ -25,6 +25,7 @@ MENU = f"""
 
 SETTING_LABELS = {
     "model": "Gemini model",
+    "auto_switch_model": "switch to another free model on daily quota",
     "temperature": "temperature",
     "turns": "rounds per match",
     "repetitions": "repetitions per pairing (tournament)",

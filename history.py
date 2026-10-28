@@ -45,6 +45,7 @@ def match_to_dict(rec: MatchRecord) -> dict:
         "opp_avg": round(pb, 3),
         "outcome": "win" if a > b else "loss" if a < b else "draw",
         "trend": rec.trend(),
+        "models": rec.models,
         "switches": [
             {"round": r, "from": old, "to": new, "reason": why}
             for r, old, new, why in rec.switches
@@ -165,7 +166,7 @@ def export_csv(sessions: list[dict]) -> int:
                         "switches": "; ".join(f"r{x['round']}: {x['from']}->{x['to']}" for x in switches),
                         "llm_rank": llm.get("rank"),
                         "n_players": len(ranking) or None,
-                        "model": cfg.get("model"),
+                        "model": " + ".join(m.get("models") or []) or cfg.get("model"),
                         "temperature": cfg.get("temperature"),
                         "seed": cfg.get("seed"),
                         "adaptive": cfg.get("adaptive"),

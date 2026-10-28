@@ -87,13 +87,18 @@ Prices are the standard paid rates in USD per 1M text tokens (input / output), f
 |---|---|---|---|
 | `gemini-3.1-flash-lite` | ~1-2 s | $0.25 / $1.50 | **Recommended for demos**: fastest, follows the strategies and returns valid JSON for the MAPE-K stages |
 | `gemini-3.5-flash-lite` | ~3 s | $0.30 / $2.50 | Good default too |
-| `gemini-flash-lite-latest` | ~5 s | same as the Flash-Lite it points to | Alias that follows the newest Flash-Lite |
+| `gemini-flash-lite-latest` | ~1-3 s | same as the Flash-Lite it points to | Alias that follows the newest Flash-Lite (may share its quota) |
+| `gemini-robotics-er-2-preview` | ~2-4 s | not listed | Robotics reasoning model, but handles the move and MAPE-K prompts fine; may refuse prompts phrased as judging a person |
 | `gemini-3.5-flash` | ~5 s | not listed | Stronger reasoning in the Analyze / Plan stages |
 | `gemini-3.8-flash` | ~8 s | $0.75 / $3.75 (from Jan 1, 2027: $1.50 / $7.50) | Most capable Flash, but often `503 UNAVAILABLE` (high demand) on the free tier |
 | `gemini-3.6-flash` | ~20 s | $0.75 / $3.75 (from Jan 1, 2027: $1.50 / $7.50) | Slow: thinks before every answer |
 | `gemini-3-flash-preview` | ~20 s | $0.50 / $3.00 | Slow, preview model |
 | `gemma-4-26b-a4b-it` | ~6 s | no paid tier | Open model (Gemma), free only |
 | `gemma-4-31b-it` | ~30 s | no paid tier | Open model (Gemma), free only, slow |
+| `gemini-flash-latest` | ~30 s | same as the Flash it points to | Alias that follows the newest Flash; slow, not in `FREE_MODELS` |
+| `gemini-3.7-flash` | ~160 s | not listed | Far too slow for a match, not in `FREE_MODELS` |
+
+`gemini-3.1-flash-lite-preview` is free too, but it uses the same daily quota as `gemini-3.1-flash-lite`, so it is no use as a fallback.
 
 **Paid only**
 
@@ -102,6 +107,7 @@ Prices are the standard paid rates in USD per 1M text tokens (input / output), f
 | `gemini-3.1-pro-preview` | $2.00 / $12.00 (prompts ≤ 200k tokens) | Best reasoning, slower |
 | `gemini-4-argon` | $2.00 / $10.00 (from Dec 1, 2026: $4.00 / $20.00) | Newest model |
 | `gemini-pro-latest` | same as the Pro it points to | Alias that follows the newest Pro |
+| `gemini-omni-1.1-flash`, `gemini-omni-flash-preview` | not listed | Omni models (`limit: 0` on a free key) |
 
 **No longer available to new API keys** (`404 NOT_FOUND`): `gemini-2.5-flash` (the default), `gemini-2.5-flash-lite`, `gemini-2.5-pro`. Older keys may still use them.
 
@@ -184,6 +190,7 @@ After each match you get a timeline and a verdict:
 | Setting | Default | Meaning |
 |---|---|---|
 | `model` | `gemini-2.5-flash` | Gemini model used by every agent. Unavailable to new keys: see [Choosing a model](#choosing-a-model) |
+| `auto_switch_model` | `on` | When the model's daily quota is used up, continue on the next free model of `FREE_MODELS` (`config.py`) |
 | `temperature` | `0.2` | Sampling temperature |
 | `turns` | `30` | Rounds per match |
 | `repetitions` | `1` | Matches per pairing in a tournament |
@@ -203,7 +210,7 @@ Payoffs are Axelrod's defaults: both cooperate = 3 each, both defect = 1 each, d
 ## Things to know
 
 - **Cost and speed**: the LLM makes one call per round, plus 2 calls per MAPE-K cycle. The program prints an estimate before each run. Matches between classic strategies are free.
-- **Rate limits and errors**: the free Gemini tier has a low per-minute limit. Use fewer rounds, a lighter model or a paid key. Each failed call is reported on one line (`! LLM call failed (...), retry in Ns`) and retried up to 3 times: on a `429` the message says which quota was hit (e.g. `15 requests/minute exceeded for gemini-3.5-flash-lite (free tier)`) and the program waits as long as the API asks. On a `503` (model overloaded) it waits a few seconds. A run aborts after 3 consecutive failed calls instead of silently playing something else. An error that retrying cannot fix (invalid key, unknown or unavailable model) aborts the run immediately with the API's message. So does a used-up daily quota or a paid-only model (`limit: 0`): waiting a minute would not help, so switch model in Settings.
+- **Rate limits and errors**: the free Gemini tier has a low per-minute limit. Use fewer rounds, a lighter model or a paid key. Each failed call is reported on one line (`! LLM call failed (...), retry in Ns`) and retried up to 3 times: on a `429` the message says which quota was hit (e.g. `15 requests/minute exceeded for gemini-3.5-flash-lite (free tier)`) and the program waits as long as the API asks. On a `503` (model overloaded) it waits a few seconds. A run aborts after 3 consecutive failed calls instead of silently playing something else. An error that retrying cannot fix (invalid key, unknown or unavailable model) aborts the run immediately with the API's message. A used-up daily quota (e.g. `500 requests/day`), a paid-only model (`limit: 0`) or an unknown model (`404`) switches automatically to the next free model of `FREE_MODELS` in `config.py` (`! ...: switching to gemini-3.5-flash-lite`) and the same call is retried there, so the match goes on. Models used up this way are remembered until the program quits, so no request is wasted on them again. The run aborts only when every free model is used up (quotas reset at midnight Pacific time). Turn `auto_switch_model` off in Settings to abort instead. Each saved match lists the models that actually answered (`models` in the history, `model` column of the CSV, e.g. `gemini-3.1-flash-lite + gemini-3.5-flash-lite`). In the data generator, a match planned on a used-up model is played on the fallback one.
 - **Interrupting**: `Ctrl-C` during a match or a tournament stops it and returns to the menu. `Ctrl-C` at the menu quits.
 - **Mutual defection can be optimal**: against an unconditional defector, 1 point per round is the best anyone can get. The `POOR` flag is only a score threshold, so the Analyze stage is told to judge performance relative to what is achievable.
 - **LLM vs itself** is off by default because it doubles the cost.

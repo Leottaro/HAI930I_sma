@@ -46,7 +46,10 @@ class LLMPlayer(axl.Player):
         return int(n) if n and math.isfinite(n) and n > 0 else None
 
     def _llm(self, kind: str, name: str, instruction: str, text: str) -> str | None:
-        return RT.brain.ask(RT.brain.runner(kind, name, instruction), text)
+        out = RT.brain.ask(kind, name, instruction, text)
+        if out is not None and self.rec is not None and RT.cfg.model not in self.rec.models:
+            self.rec.models.append(str(RT.cfg.model))  # the model may change mid-match (quota)
+        return out
 
     # ── Axelrod hooks ──────────────────────────────────────────────────────
     def update_history(self, play, coplay) -> None:
