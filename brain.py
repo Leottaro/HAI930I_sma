@@ -88,6 +88,7 @@ class Brain:
         self.loop = asyncio.new_event_loop()  # one loop for the whole program
         self._runners: dict[tuple, InMemoryRunner] = {}
         self.calls = 0
+        self.seconds = 0.0  # time spent in successful calls (retries included): for estimates
         self.failures = 0  # consecutive failed calls
         self.last_error = ""
 
@@ -143,10 +144,12 @@ class Brain:
 
     def ask(self, runner: InMemoryRunner, text: str) -> str | None:
         err: Exception | None = None
+        t0 = time.monotonic()
         for attempt in range(3):
             try:
                 out = self.loop.run_until_complete(self._ask(runner, text))
                 self.calls += 1
+                self.seconds += time.monotonic() - t0
                 self.failures = 0
                 return out
             except KeyboardInterrupt:

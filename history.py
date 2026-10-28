@@ -21,7 +21,7 @@ CSV_FILE = Path(__file__).with_name("results_matches.csv")
 SCHEMA_VERSION = 1
 
 CSV_COLUMNS = [
-    "session_id", "timestamp", "kind", "status", "match_no",
+    "session_id", "timestamp", "kind", "status", "batch", "match_no",
     "opponent", "length", "start_strategy", "final_strategy",
     "llm_score", "opp_score", "llm_avg", "opp_avg", "outcome", "trend",
     "n_switches", "switches", "llm_rank", "n_players",
@@ -87,12 +87,14 @@ def save_session(
     records: list[MatchRecord],
     ranking: list[dict] | None = None,
     status: str = "complete",
+    batch: str | None = None,
 ) -> int:
     """Append one run to the history file and return its session number.
 
     kind    "1v1" or "tournament"
     ranking final tournament ranking (rows with rank / name / score / is_llm), if any
     status  "complete", or "aborted" when only the matches finished so far are kept
+    batch   id shared by every match of one data-generator run (None otherwise)
     """
     sessions, _ = load_sessions()
     sid = max((s["id"] for s in sessions), default=0) + 1
@@ -102,6 +104,7 @@ def save_session(
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "kind": kind,
         "status": status,
+        "batch": batch,
         "config": asdict(RT.cfg),  # model, temperature, turns, seed, MAPE-K settings ...
         "strategies": RT.strategies,  # prompts as they were for this run
         "ranking": (
@@ -146,6 +149,7 @@ def export_csv(sessions: list[dict]) -> int:
                         "timestamp": s.get("timestamp"),
                         "kind": s.get("kind"),
                         "status": s.get("status"),
+                        "batch": s.get("batch"),
                         "match_no": no,
                         "opponent": m.get("opponent"),
                         "length": m.get("length"),

@@ -33,6 +33,7 @@ Project layout
     strategies.py    default LLM prompt strategies (edited ones: llm_strategies.json)
     history.py       append-only results history (results_history.jsonl) + CSV export
     history_view.py  "Results history" menu: browse saved sessions / matches / replays
+    generator.py     "Data generator" menu: sweep settings, run every combination
     records.py       Round / MatchRecord / Knowledge data classes
     display.py       live per-round display and MAPE-K trace
     terminal.py      colours, wrapped output, input helpers
@@ -45,6 +46,7 @@ line per run, never rewritten); browse it from the "Results history" menu.
 """
 from __future__ import annotations
 
+from generator import menu_generator
 from history_view import menu_history
 from menus import MENU, menu_1v1, menu_lab, menu_settings, menu_tournament
 from terminal import ask
@@ -58,11 +60,12 @@ def main() -> None:
         "3": menu_lab,
         "4": menu_settings,
         "5": menu_history,
+        "6": menu_generator,
     }
     while True:
         try:
             choice = ask("\n> ").lower()
-            if choice in ("6", "q", "quit", "exit"):
+            if choice in ("7", "q", "quit", "exit"):
                 return
             if choice in actions:
                 actions[choice]()

@@ -10,7 +10,7 @@ from typing import Any
 import axelrod as axl
 
 from brain import Brain, LLMUnavailable
-from config import ENV_FILE
+from config import ENV_FILE, Config
 from history import HISTORY_FILE, save_session
 from player import LLMPlayer
 from runtime import RT
@@ -38,19 +38,25 @@ def ensure_ready() -> bool:
     return True
 
 
+def llm_calls(cfg: Config) -> int:
+    """LLM calls of one match: 1 per round + 2 per MAPE-K cycle (rounds every, 2*every ... < turns)."""
+    cycles = (cfg.turns - 1) // cfg.mapek_every if cfg.adaptive else 0
+    return cfg.turns + 2 * cycles
+
+
 def estimate(n_matches: int) -> int:
-    cfg = RT.cfg
-    cycles = (cfg.turns // cfg.mapek_every) * 2 if cfg.adaptive else 0
-    return n_matches * (cfg.turns + cycles)
+    return n_matches * llm_calls(RT.cfg)
 
 
-def save_run(kind: str, ranking: list[dict] | None = None, status: str = "complete") -> None:
+def save_run(
+    kind: str, ranking: list[dict] | None = None, status: str = "complete", batch: str | None = None
+) -> None:
     """Append this run's finished LLM matches to the history file (never overwrites)."""
     done = [r for r in RT.records if r.is_complete()]
     if not done:
         return
     try:
-        sid = save_session(kind, done, ranking=ranking, status=status)
+        sid = save_session(kind, done, ranking=ranking, status=status, batch=batch)
     except OSError as e:
         print(yellow(f"  ! could not save results to {HISTORY_FILE.name} ({e})"))
         return
@@ -58,25 +64,29 @@ def save_run(kind: str, ranking: list[dict] | None = None, status: str = "comple
     print(dim(f"  saved to {HISTORY_FILE.name} (session #{sid}, {n} match{'es' if n != 1 else ''})"))
 
 
-def run_1v1(opp_cls: type) -> None:
+def run_1v1(opp_cls: type, ui: str = "rounds", batch: str | None = None) -> bool:
+    """Play and save one match; False if it did not finish. `batch` tags data-generator runs."""
     if not ensure_ready():
-        return
-    RT.ui = "rounds"
+        return False
+    RT.ui = ui
     cfg = RT.cfg
-    print(dim(f"  ~{estimate(1)} LLM calls"))
+    if batch is None:
+        print(dim(f"  ~{estimate(1)} LLM calls"))
     match = axl.Match((LLMPlayer(), opp_cls()), turns=cfg.turns, seed=cfg.seed)
     try:
         match.play()
     except LLMUnavailable as e:
         clear_status()
         print(red(f"\n  ✗ LLM unreachable, match aborted: {e}"))
-        return
+        return False
     except KeyboardInterrupt:
         clear_status()
         print(yellow("\n  ✗ match interrupted"))
-        return
-    print(dim(f"\n  LLM calls: {RT.brain.calls}"))
-    save_run("1v1")
+        return False
+    if batch is None:
+        print(dim(f"\n  LLM calls: {RT.brain.calls}"))
+    save_run("1v1", batch=batch)
+    return True
 
 
 def run_tournament(opp_classes: list[type]) -> None:

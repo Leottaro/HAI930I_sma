@@ -19,8 +19,36 @@ MENU = f"""
   3) Strategy lab     view / edit / add the LLM prompt strategies
   4) Settings         rounds, MAPE-K period, model, adaptive on/off ...
   5) Results history  browse every saved 1v1 / tournament, export to CSV
-  6) Quit
+  6) Data generator   sweep settings, run every combination as a 1v1 match
+  7) Quit
 """
+
+SETTING_LABELS = {
+    "model": "Gemini model",
+    "temperature": "temperature",
+    "turns": "rounds per match",
+    "repetitions": "repetitions per pairing (tournament)",
+    "seed": "random seed",
+    "mapek_every": "run MAPE-K every N rounds",
+    "window": "Monitor window (rounds)",
+    "poor_threshold": "'POOR' threshold (avg pts/round)",
+    "history_shown": "rounds of history shown to the move agent",
+    "initial_strategy": "initial prompt strategy",
+    "adaptive": "adaptive (MAPE-K on; off = frozen baseline)",
+    "llm_self_play": "LLM plays a copy of itself in tournaments",
+}
+
+
+def check_setting(key: str, value: float) -> None:
+    """Raise ValueError if a numeric setting is out of range."""
+    if not math.isfinite(value):
+        raise ValueError("must be a finite number")
+    if key == "temperature" and not 0 <= value <= 2:
+        raise ValueError("must be between 0 and 2")
+    if key == "seed" and not 0 <= value < 2**32:
+        raise ValueError("must be between 0 and 2**32 - 1")
+    if value <= 0 and key not in ("seed", "temperature"):
+        raise ValueError("must be positive")
 
 
 def pick_from(
@@ -136,20 +164,7 @@ def menu_lab() -> None:
 
 def menu_settings() -> None:
     cfg = RT.cfg
-    labels = {
-        "model": "Gemini model",
-        "temperature": "temperature",
-        "turns": "rounds per match",
-        "repetitions": "repetitions per pairing (tournament)",
-        "seed": "random seed",
-        "mapek_every": "run MAPE-K every N rounds",
-        "window": "Monitor window (rounds)",
-        "poor_threshold": "'POOR' threshold (avg pts/round)",
-        "history_shown": "rounds of history shown to the move agent",
-        "initial_strategy": "initial prompt strategy",
-        "adaptive": "adaptive (MAPE-K on; off = frozen baseline)",
-        "llm_self_play": "LLM plays a copy of itself in tournaments",
-    }
+    labels = SETTING_LABELS
     keys = list(labels)
     while True:
         print(f"\n{bold('Settings')}")
@@ -173,14 +188,7 @@ def menu_settings() -> None:
                 new = val.lower() in ("y", "yes", "true", "1", "on")
             elif isinstance(cur, (int, float)):
                 new = type(cur)(val)
-                if not math.isfinite(new):
-                    raise ValueError("must be a finite number")
-                if key == "temperature" and not 0 <= new <= 2:
-                    raise ValueError("must be between 0 and 2")
-                if key == "seed" and not 0 <= new < 2**32:
-                    raise ValueError("must be between 0 and 2**32 - 1")
-                if new <= 0 and key not in ("seed", "temperature"):
-                    raise ValueError("must be positive")
+                check_setting(key, new)
             else:
                 new = val or cur
             setattr(cfg, key, new)
