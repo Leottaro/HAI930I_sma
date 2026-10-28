@@ -69,8 +69,20 @@ def menu_1v1() -> None:
 
 def menu_tournament() -> None:
     names = list(OPPONENTS)
+    
+    # Base strategy: the prompt strategy the LLM starts the match with
+    # (the MAPE-K loop may switch away from it later). Enter keeps the current one.
+    strategies = list(RT.strategies)
+    labels = [f"{n} — {s['summary']}" for n, s in RT.strategies.items()]
+    (i,) = pick_from(
+        f"LLM base strategy (currently: {RT.cfg.initial_strategy}):",
+        labels,
+        default=strategies.index(RT.cfg.initial_strategy),
+    )
+    RT.cfg.initial_strategy = strategies[i]  # also what Settings shows as "initial prompt strategy"
+    
     picks = pick_from("Opponents in the tournament:", names, many=True)
-    run_tournament([OPPONENTS[names[i]] for i in picks])
+    run_tournament([OPPONENTS[names[j]] for j in picks])
 
 
 def show_strategies() -> None:
