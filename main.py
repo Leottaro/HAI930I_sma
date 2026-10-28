@@ -24,33 +24,45 @@ The LLM never sees the opponent's name: it has to infer who it is facing.
 
 Project layout
 --------------
-    main.py        entry point (menu loop)
-    menus.py       interactive menus (1v1, tournament, strategy lab, settings)
-    matches.py     running a 1v1 match / a tournament, results tables
-    player.py      LLMPlayer: the Axelrod player with the MAPE-K loop
-    brain.py       ADK wrapper: LLM calls, retries, quota/error reporting
-    prompts.py     static prompts of the Analyze / Plan / move agents
-    strategies.py  default LLM prompt strategies (edited ones: llm_strategies.json)
-    records.py     Round / MatchRecord / Knowledge data classes
-    display.py     live per-round display and MAPE-K trace
-    terminal.py    colours, wrapped output, input helpers
-    opponents.py   classic deterministic opponents
-    config.py      Config dataclass + .env loading
-    runtime.py     shared state (RT): config, strategies, brain, match records
+    main.py          entry point (menu loop)
+    menus.py         interactive menus (1v1, tournament, strategy lab, settings)
+    matches.py       running a 1v1 match / a tournament, results tables
+    player.py        LLMPlayer: the Axelrod player with the MAPE-K loop
+    brain.py         ADK wrapper: LLM calls, retries, quota/error reporting
+    prompts.py       static prompts of the Analyze / Plan / move agents
+    strategies.py    default LLM prompt strategies (edited ones: llm_strategies.json)
+    history.py       append-only results history (results_history.jsonl) + CSV export
+    history_view.py  "Results history" menu: browse saved sessions / matches / replays
+    records.py       Round / MatchRecord / Knowledge data classes
+    display.py       live per-round display and MAPE-K trace
+    terminal.py      colours, wrapped output, input helpers
+    opponents.py     classic deterministic opponents
+    config.py        Config dataclass + .env loading
+    runtime.py       shared state (RT): config, strategies, brain, match records
+
+Every finished 1v1 / tournament is appended to results_history.jsonl (one JSON
+line per run, never rewritten); browse it from the "Results history" menu.
 """
 from __future__ import annotations
 
+from history_view import menu_history
 from menus import MENU, menu_1v1, menu_lab, menu_settings, menu_tournament
 from terminal import ask
 
 
 def main() -> None:
     print(MENU)
-    actions = {"1": menu_1v1, "2": menu_tournament, "3": menu_lab, "4": menu_settings}
+    actions = {
+        "1": menu_1v1,
+        "2": menu_tournament,
+        "3": menu_lab,
+        "4": menu_settings,
+        "5": menu_history,
+    }
     while True:
         try:
             choice = ask("\n> ").lower()
-            if choice in ("5", "q", "quit", "exit"):
+            if choice in ("6", "q", "quit", "exit"):
                 return
             if choice in actions:
                 actions[choice]()

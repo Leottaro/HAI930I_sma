@@ -7,6 +7,22 @@ from typing import Any
 from runtime import RT
 from terminal import green, red, yellow
 
+# Trend of a match (how the LLM's score evolved), as saved in the history file.
+TREND_LABELS = {
+    "comeback": "↗ comeback",
+    "improved": "↗ improved",
+    "declined": "↘ declined",
+    "steady": "→ steady",
+}
+_TREND_COLOUR = {"comeback": green, "improved": green, "declined": red, "steady": yellow}
+
+
+def verdict_text(trend: str | None, pad: int = 0) -> str:
+    """Coloured label for a trend key ('—' when unknown). `pad` pads the visible text."""
+    label = f"{TREND_LABELS.get(trend, '—'):<{pad}}"
+    colour = _TREND_COLOUR.get(trend)
+    return colour(label) if colour else label
+
 
 @dataclass
 class Round:
@@ -60,17 +76,25 @@ class MatchRecord:
             }
         return out
 
-    def verdict(self) -> str:
+    def is_complete(self) -> bool:
+        """True once every round of the match has been played."""
+        return self.length is not None and len(self.rounds) >= self.length
+
+    def trend(self) -> str | None:
+        """'comeback' | 'improved' | 'declined' | 'steady', or None if the match is too short."""
         w = RT.cfg.window
         pts = [r.mine for r in self.rounds]
         if len(pts) < 2 * w:
-            return "—"
+            return None
         first, last = sum(pts[:w]) / w, sum(pts[-w:]) / w
         if last - first >= 0.5:
-            return green("↗ comeback") if first < RT.cfg.poor_threshold else green("↗ improved")
+            return "comeback" if first < RT.cfg.poor_threshold else "improved"
         if first - last >= 0.5:
-            return red("↘ declined")
-        return yellow("→ steady")
+            return "declined"
+        return "steady"
+
+    def verdict(self) -> str:
+        return verdict_text(self.trend())
 
 
 @dataclass
