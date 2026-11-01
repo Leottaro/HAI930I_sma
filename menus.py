@@ -10,7 +10,7 @@ from matches import run_1v1, run_tournament
 from opponents import OPPONENTS
 from runtime import RT
 from strategies import MIN_STRATEGIES
-from terminal import ask, bold, cyan, read_multiline, width
+from terminal import ask, bold, cyan, dim, read_multiline, width
 
 MENU = f"""
 {bold('Axelrod tournament · deterministic strategies vs self-adaptive LLM (MAPE-K)')}
@@ -77,6 +77,46 @@ def pick_from(
         print("  invalid choice")
 
 
+# Same settings the data generator asks for (it also has `repetitions`, which only
+# makes sense for sweeps, and the fixed `history_shown` / `seed`, left in Settings).
+LLM_SETTINGS = ["model", "temperature", "turns"]
+MAPEK_SETTINGS = ["adaptive", "mapek_every", "window", "poor_threshold"]
+_YES = ("y", "yes", "on", "true", "1")
+_NO = ("n", "no", "off", "false", "0")
+
+
+def ask_setting(key: str) -> None:
+    """Ask for ONE value of a setting (no lists, no ranges) and store it in RT.cfg.
+
+    Enter keeps the current value. Same prompt style as the data generator.
+    """
+    cur = getattr(RT.cfg, key)
+    is_bool = isinstance(cur, bool)
+    shown = ("y" if cur else "n") if is_bool else cur
+    hint = f"y/n, Enter = {shown}" if is_bool else f"Enter = {shown}"
+    while True:
+        raw = ask(f"  {SETTING_LABELS[key]:<44} [{hint}] > ")
+        if not raw:
+            return
+        try:
+            if is_bool:  # checked first: bool is a subclass of int
+                if raw.lower() not in _YES + _NO:
+                    raise ValueError("answer y or n")
+                new: Any = raw.lower() in _YES
+            elif isinstance(cur, (int, float)):
+                new = type(cur)(raw)
+                check_setting(key, new)
+            else:
+                if re.search(r"[,\s]", raw):
+                    raise ValueError("a single value, no commas or spaces")
+                new = raw
+        except ValueError as e:
+            print(f"  invalid ({e})")
+            continue
+        setattr(RT.cfg, key, new)
+        return
+
+
 def menu_1v1() -> None:
     names = list(OPPONENTS)
 
@@ -92,6 +132,17 @@ def menu_1v1() -> None:
     RT.cfg.initial_strategy = strategies[i]  # also what Settings shows as "initial prompt strategy"
 
     (j,) = pick_from("Opponent for the LLM:", names)
+
+    # Same settings as the data generator, one value each (Enter = keep the current one).
+    print(f"\n{bold('LLM / match settings')}  {dim('one value each, Enter = keep the current one')}")
+    for key in LLM_SETTINGS:
+        ask_setting(key)
+    print(f"\n{bold('MAPE-K settings')}")
+    for key in MAPEK_SETTINGS:
+        ask_setting(key)
+
+    recap_keys = ["initial_strategy", *LLM_SETTINGS, *MAPEK_SETTINGS, "history_shown", "seed"]
+    print(dim(f"\n  Starting 1v1 vs {names[j]}: " + ", ".join(f"{k}={getattr(RT.cfg, k)}" for k in recap_keys)))
 
     run_1v1(OPPONENTS[names[j]])
 

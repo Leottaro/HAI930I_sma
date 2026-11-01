@@ -197,7 +197,14 @@ def run_batch(runs: list[dict], costs: list[int], shown: list[str]) -> None:
             spc = (time.monotonic() - t0) / used if used else seconds_per_call()[0]
             params = "  ".join(f"{key}={run[key]}" for key in shown)
             print(f"\n{bold(f'[{k + 1}/{len(runs)}]')} {params}  {dim(f'ETA {duration(sum(costs[k:]) * spc)}')}")
-            if not run_1v1(OPPONENTS[run["opponent"]], ui="compact", batch=batch):
+            print(dim("  config: " + ", ".join(f"{key}={value}" for key, value in run.items())))
+            calls_before, secs_before = RT.brain.calls, RT.brain.seconds
+            finished = run_1v1(OPPONENTS[run["opponent"]], ui="compact", batch=batch)
+            n_calls, n_secs = RT.brain.calls - calls_before, RT.brain.seconds - secs_before
+            avg = f", {n_secs / n_calls:.1f} s/call" if n_calls else ""
+            status = "finished" if finished else "NOT finished"
+            print(dim(f"  ↳ {status}: {n_calls} LLM calls (estimated {costs[k]}), {duration(n_secs)} spent in LLM{avg}"))
+            if not finished:
                 break
             done += 1
     except KeyboardInterrupt:
