@@ -34,7 +34,7 @@ FREE_MODELS = [
 @dataclass
 class Config:
     model: Any = "gemini-3.1-flash-lite"
-    auto_switch_model: bool = True  # daily quota hit → continue on another FREE_MODELS model
+    auto_switch_model: bool = True  # daily quota hit / still overloaded → continue on another FREE_MODELS model
     temperature: float = 0.2
     turns: int = 10  # rounds per match (keep it small: 1 LLM call per round)
     repetitions: int = 1  # matches per pairing in a tournament

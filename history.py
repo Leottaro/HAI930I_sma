@@ -26,7 +26,7 @@ CSV_COLUMNS = [
     "llm_score", "opp_score", "llm_avg", "opp_avg", "outcome", "trend",
     "n_switches", "switches", "llm_rank", "n_players",
     "model", "temperature", "seed", "adaptive", "mapek_every", "window",
-    "poor_threshold", "initial_strategy",
+    "poor_threshold", "initial_strategy", "source",
 ]
 
 
@@ -132,10 +132,10 @@ def save_session(
     return sid
 
 
-def export_csv(sessions: list[dict]) -> int:
-    """Write one row per saved LLM match to results_matches.csv; returns the row count."""
+def export_csv(sessions: list[dict], path: Path = CSV_FILE) -> int:
+    """Write one row per saved LLM match to `path` (results_matches.csv); returns the row count."""
     n = 0
-    with CSV_FILE.open("w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig: Excel-friendly
+    with path.open("w", newline="", encoding="utf-8-sig") as f:  # utf-8-sig: Excel-friendly
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for s in sessions:
@@ -174,6 +174,7 @@ def export_csv(sessions: list[dict]) -> int:
                         "window": cfg.get("window"),
                         "poor_threshold": cfg.get("poor_threshold"),
                         "initial_strategy": cfg.get("initial_strategy"),
+                        "source": s.get("source"),  # history file it came from (sort_history.py)
                     }
                 )
                 n += 1

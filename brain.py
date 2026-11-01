@@ -23,6 +23,9 @@ logging.getLogger("google_adk").setLevel(logging.CRITICAL)
 logging.getLogger("google_genai").setLevel(logging.ERROR)
 
 APP, USER = "axelrod_mapek", "player"
+# A model still overloaded (5xx) after all retries is set aside this long, then
+# becomes a candidate again: unlike a daily quota, high demand is temporary.
+OVERLOAD_COOLDOWN = 600.0
 
 
 class LLMUnavailable(RuntimeError):
@@ -34,13 +37,23 @@ def http_code(e: Exception) -> int | None:
     return code if isinstance(code, int) else None
 
 
+def api_retry_seconds(text: str) -> float | None:
+    """The API's own retry hint: "retry in 13.3s", "retry in 18h27m23.9s" or retryDelay."""
+    m = re.search(r"retry in ((?:\d+h)?(?:\d+m(?!s))?(?:[\d.]+s)?)", text)
+    if m and m.group(1):
+        parts = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?(?:([\d.]+)s)?", m.group(1))
+        if parts:
+            h, mn, s = (float(x) if x else 0.0 for x in parts.groups())
+            return h * 3600 + mn * 60 + s
+    m = re.search(r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", text)
+    return float(m.group(1)) if m else None
+
+
 def retry_delay(e: Exception, attempt: int) -> float:
     """Seconds to wait before retrying a failed call (honours the API's hint)."""
-    m = re.search(r"retry in ([\d.]+)\s*s", str(e)) or re.search(
-        r"retryDelay['\"]?:\s*['\"](\d+(?:\.\d+)?)s", str(e)
-    )
-    if m:
-        return min(float(m.group(1)) + 1, 90)
+    hint = api_retry_seconds(str(e))
+    if hint is not None:
+        return min(hint + 1, 90)
     code = http_code(e)
     if code == 429:  # rate limited
         return 15 * (attempt + 1)
@@ -54,16 +67,28 @@ def quota_info(e: Exception) -> dict | None:
     if http_code(e) != 429:
         return None
     text = str(e)
-    qid = re.search(r"quotaId['\"]?:\s*['\"]([^'\"]+)", text)
-    qid = qid.group(1) if qid else ""
+    # One 429 can list several violated quotas (per minute *and* per day, in that
+    # order): the daily one decides, since waiting a minute won't lift it.
+    qids = re.findall(r"quotaId['\"]?:\s*['\"]([^'\"]+)", text)
+    limits = [int(x) for x in re.findall(r"limit: (\d+)", text)]
+    i = next((k for k, q in enumerate(qids) if "PerDay" in q and "Token" not in q),
+             next((k for k, q in enumerate(qids) if "PerDay" in q), 0))
+    qid = qids[i] if qids else ""
     per = "day" if "PerDay" in qid else "minute" if "PerMinute" in qid else None
+    if per is None and (api_retry_seconds(text) or 0) > 3600:
+        per = "day"  # no quotaId, but "retry in 18h…" says the same thing
     what = "tokens" if "Token" in qid else "requests"
-    limit = re.search(r"limit: (\d+)", text)
+    if limits and all(x == 0 for x in limits):
+        limit = 0  # paid-only model
+    elif len(limits) == len(qids) and qids:
+        limit = limits[i]  # quotaIds and "limit: N" lines come in the same order
+    else:
+        limit = limits[0] if limits else None
     model = re.search(r"model: ([\w.-]+)", text)
     return {
         "per": per,
         "what": what,
-        "limit": int(limit.group(1)) if limit else None,
+        "limit": limit,
         "model": model.group(1) if model else str(RT.cfg.model),
         "free": "FreeTier" in qid or "free_tier" in text,
     }
@@ -93,6 +118,7 @@ class Brain:
         self.failures = 0  # consecutive failed calls
         self.last_error = ""
         self.exhausted: set[str] = set()  # models whose daily quota is used up (this program run)
+        self.overloaded: dict[str, float] = {}  # model -> time.monotonic() until which it is set aside
 
     def runner(self, kind: str, name: str, instruction: str) -> InMemoryRunner:
         key = (kind, name, instruction, str(RT.cfg.model), RT.cfg.temperature)
@@ -144,17 +170,27 @@ class Brain:
         if tasks:
             self.loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
 
-    def switch_model(self, reason: str) -> bool:
-        """Mark the current model as used up and move RT.cfg to the next free one.
+    def is_overloaded(self, model: Any) -> bool:
+        return self.overloaded.get(str(model), 0.0) > time.monotonic()
 
-        False when auto-switching is off or every model of FREE_MODELS is used up.
+    def switch_model(self, reason: str, cooldown: float | None = None) -> bool:
+        """Set the current model aside and move RT.cfg to the next available free one.
+
+        cooldown=None: used up for this program run (daily quota, paid-only, 404).
+        cooldown=N: overloaded, available again in N seconds (0 = just move on).
+        False when auto-switching is off or no model of FREE_MODELS is available.
         """
         cur = RT.cfg.model
         if not RT.cfg.auto_switch_model or not isinstance(cur, str):
             return False
-        self.exhausted.add(cur)
-        nxt = next((m for m in FREE_MODELS if m not in self.exhausted), None)
-        if nxt is None:
+        if cooldown is None:
+            self.exhausted.add(cur)
+        else:
+            self.overloaded[cur] = max(self.overloaded.get(cur, 0.0), time.monotonic() + cooldown)
+        nxt = next(
+            (m for m in FREE_MODELS if m not in self.exhausted and not self.is_overloaded(m)), None
+        )
+        if nxt is None or nxt == cur:
             return False
         clear_status()
         print(yellow(f"  ! {reason}: switching to {nxt}"))
@@ -165,11 +201,15 @@ class Brain:
         err: Exception | None = None
         t0 = time.monotonic()
         attempt = 0
-        while attempt < 3:
+        while True:
             if RT.cfg.model in self.exhausted and RT.cfg.auto_switch_model:
                 # e.g. the data generator set it back: don't spend a request to learn it again
                 if not self.switch_model(f"{RT.cfg.model} already used up today"):
                     raise LLMUnavailable("every free model is used up for today (quota resets at midnight Pacific time)")
+            elif self.is_overloaded(RT.cfg.model):
+                # Overloaded a few minutes ago: try another one first. If none is
+                # available, try this one anyway (it may have recovered).
+                self.switch_model(f"{RT.cfg.model} was overloaded recently", cooldown=0)
             runner = self.runner(kind, name, instruction)
             try:
                 out = self.loop.run_until_complete(self._ask(runner, text))
@@ -207,7 +247,16 @@ class Brain:
                     clear_status()
                     print(dim(f"  ! LLM call failed ({short_error(e)}), retry in {delay:.0f}s"))
                     time.sleep(delay)
-                attempt += 1
+                    attempt += 1
+                    continue
+                # Still overloaded after the retries: move to another free model for a
+                # while (same call, fresh retries) rather than counting a failure.
+                if code is not None and code >= 500 and self.switch_model(
+                    f"{RT.cfg.model} overloaded ({code})", cooldown=OVERLOAD_COOLDOWN
+                ):
+                    attempt = 0
+                    continue
+                break
         self.failures += 1
         self.last_error = short_error(err)
         clear_status()

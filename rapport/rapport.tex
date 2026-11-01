@@ -1,0 +1,550 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{lmodern}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{hyperref}
+\hypersetup{hidelinks}
+
+\title{HAI930I - Systèmes multi-agents\\Tournoi d'Axelrod : un LLM auto-adaptatif (MAPE-K)\\face à des stratégies déterministes}
+\author{Dejean Robin, Hafdane Léo, Texier-Grailhes Killian}
+\date{Novembre 2026}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+Le projet reproduit le tournoi d'Axelrod sur le dilemme du prisonnier itéré
+(gains : 3/3 si les deux coopèrent, 1/1 si les deux trahissent, 5/0 pour celui
+qui trahit un coopérateur). Un joueur piloté par un LLM y affronte neuf
+stratégies déterministes classiques. À chaque round, le LLM joue selon une
+\emph{stratégie de prompt} (Generous, Pragmatic, Merciless ou Peacemaker). Tous
+les \texttt{mapek\_every} rounds, une boucle MAPE-K (Monitor, Analyze, Plan,
+Execute, Knowledge) peut changer cette stratégie.
+
+La question posée par le sujet est la suivante : \textbf{un LLM auto-adaptatif
+peut-il remonter au score (« comeback ») quand il détecte qu'il joue mal ?}
+
+% ─────────────────────────────────────────────────────────────────────────
+\section{Paramètres testés}
+
+\subsection{Données}
+
+Les matchs ont été produits avec le générateur de données du programme, à
+partir de deux fichiers d'historique : \texttt{results\_history.jsonl}
+(Killian) et \texttt{results\_history\_robin.jsonl} (Robin). Le script
+\texttt{sort\_history.py} les a réunis puis rangés par condition
+expérimentale. Les matchs rejoués à l'identique lors d'une relance ont été mis
+de côté (60 matchs). Il reste \textbf{672 matchs} : 668 en 1 contre 1 et un
+tournoi de 4 matchs, répartis en 17 conditions.
+
+\subsection{Variables étudiées}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llp{8.2cm}}
+\toprule
+Paramètre & Valeurs testées & Rôle \\
+\midrule
+\texttt{adaptive}        & oui / non           & boucle MAPE-K active, ou stratégie de départ conservée tout le match (référence \emph{figée}) \\
+\texttt{mapek\_every}    & 1, 5, 10            & la boucle tourne tous les $N$ rounds \\
+\texttt{turns}           & 10, 20              & nombre de rounds par match \\
+\texttt{window}          & 1, 5, 10, 20        & fenêtre glissante de l'étape Monitor (en rounds) \\
+\texttt{temperature}     & 0,1, 0,2, 0,9       & température d'échantillonnage du LLM \\
+\texttt{repetitions}     & 1, 5                & nombre de matchs par combinaison \\
+stratégie de départ      & 4                   & Generous, Pragmatic, Merciless, Peacemaker \\
+adversaire               & 9                   & Cooperator, Defector, Tit For Tat, Tit For 2 Tats, Suspicious Tit For Tat, Grudger, Alternator, Prober, Win-Stay Lose-Shift \\
+\bottomrule
+\end{tabular}
+\caption{Paramètres que nous avons fait varier.}
+\label{tab:parametres}
+\end{table}
+
+Les autres réglages sont restés fixes : seuil « POOR » à 1,5 point par round,
+10 rounds d'historique montrés au LLM, graine aléatoire 1.
+
+\paragraph{Nombre de cycles MAPE-K.} Un match de $T$ rounds avec une période
+$N$ compte $\lfloor (T-1)/N \rfloor$ cycles MAPE-K :
+\begin{itemize}
+  \item 10 rounds avec $N = 10$ : \textbf{0 cycle}. La boucle ne tourne jamais
+        et ces matchs sont en réalité figés ;
+  \item 10 rounds avec $N = 5$ : 1 seul cycle, au round 5 ;
+  \item 20 rounds avec $N = 5$ : 3 cycles ;
+  \item 10 rounds avec $N = 1$ : 9 cycles (un par round).
+\end{itemize}
+
+\paragraph{Le modèle n'est pas un paramètre.} Plusieurs modèles ont joué :
+gemma-4-26b (399 matchs), gemini-3.1-flash-lite (146) et gemini-3.5-flash-lite
+(116), plus quelques autres. Nous changions de modèle pour contourner les quotas
+gratuits, ce n'était pas un choix expérimental. Nous supposons donc que tous les
+modèles se valent ; la section~\ref{sec:modeles} discute cette hypothèse.
+
+\subsection{Conditions jouées}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{cccccccc}
+\toprule
+Rounds & Temp. & Rép. & MAPE-K & Fenêtre & Adversaires & Matchs & Données \\
+\midrule
+10 & 0,1 & 1 & figé & 5  & 9 & 42  & Killian \\
+10 & 0,1 & 1 & 5    & 5  & 9 & 67  & Killian \\
+10 & 0,1 & 1 & 10   & 5  & 2 & 8   & Killian \\
+10 & 0,2 & 1 & figé & 5  & 9 & 80  & Killian, Robin \\
+10 & 0,2 & 1 & 1    & 5  & 5 & 26  & Robin \\
+10 & 0,2 & 1 & 5    & 5  & 9 & 63  & Killian, Robin \\
+10 & 0,2 & 1 & 10   & 5  & 1 & 2   & Killian \\
+10 & 0,2 & 5 & figé & 5  & 6 & 105 & Killian \\
+10 & 0,2 & 5 & 5    & 5  & 6 & 116 & Killian \\
+10 & 0,9 & 1 & figé & 5  & 9 & 41  & Killian \\
+10 & 0,9 & 1 & 5    & 5  & 9 & 64  & Killian \\
+10 & 0,9 & 1 & 10   & 5  & 2 & 8   & Killian \\
+20 & 0,2 & 1 & 5    & 1  & 3 & 12  & Robin \\
+20 & 0,2 & 1 & 5    & 5  & 3 & 12  & Robin \\
+20 & 0,2 & 1 & 5    & 10 & 3 & 11  & Robin \\
+20 & 0,2 & 1 & 5    & 20 & 3 & 11  & Robin \\
+\bottomrule
+\end{tabular}
+\caption{Les conditions en 1 contre 1 (la 17\textsuperscript{e} est un
+tournoi à 5 joueurs : 10 rounds, T = 0,2, MAPE-K tous les 10 rounds, donc
+jamais ; 4 matchs du LLM, Killian). Chaque condition croise ses adversaires
+avec les 4 stratégies de départ. Les matchs de 20 rounds opposent le LLM à Cooperator,
+Defector et Tit For Tat ; ceux avec $N = 1$ à ces trois adversaires plus
+Tit For 2 Tats et Suspicious Tit For Tat.}
+\label{tab:conditions}
+\end{table}
+
+\subsection{Métriques}
+
+\begin{itemize}
+  \item \textbf{Score moyen par round} du LLM (entre 0 et 5), le critère
+        principal. Pour comparer deux modes à armes égales, on fait d'abord la
+        moyenne de chaque cellule (adversaire $\times$ stratégie de départ),
+        puis on compare les cellules deux à deux.
+  \item \textbf{Issue} du match (victoire, nul, défaite) et \textbf{taux de
+        coopération}.
+  \item \textbf{Comeback} : moyenne des 5 premiers rounds sous 1,5 point par
+        round (seuil « POOR »), et moyenne des 5 derniers rounds supérieure d'au
+        moins 0,5 point. On utilise une fenêtre de 5 rounds pour toutes les
+        conditions, afin qu'elles restent comparables.
+  \item \textbf{Changements de stratégie} décidés par la boucle, et
+        \textbf{stratégie finale}.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────
+\section{Résultats}
+
+Sauf mention contraire, les résultats portent sur les matchs de 10 rounds à
+1 répétition, en comparant la boucle tous les 5 rounds au mode figé
+(357 matchs, 103 cellules).
+
+\subsection{Score moyen : pas de gain global}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Température & Figé & Adaptatif & Écart & Cellules meilleures / moins bonnes \\
+\midrule
+0,1 & 2,37 & 2,40 & $+0{,}03$ & 38\,\% / 38\,\% \\
+0,2 & 2,35 & 2,34 & $-0{,}01$ & 39\,\% / 25\,\% \\
+0,9 & 2,36 & 2,33 & $-0{,}03$ & 36\,\% / 42\,\% \\
+\midrule
+Toutes & & & $-0{,}00$ & 38\,\% / 35\,\% \\
+\bottomrule
+\end{tabular}
+\caption{Score moyen par round du LLM (moyenne des cellules adversaire $\times$
+stratégie de départ). Les cellules restantes sont à égalité.}
+\label{tab:global}
+\end{table}
+
+En moyenne, la boucle MAPE-K \textbf{ne change pas le score} : l'écart avec le
+mode figé est nul sur l'ensemble des 103 cellules et reste inférieur à
+0,03 point par round à chaque température. Il y a autant de cellules où
+l'adaptation fait mieux (38\,\%) que de cellules où elle fait moins bien
+(35\,\%). Les expériences à 5 répétitions le confirment : l'écart y est de
+$-0{,}04$ (21 cellules).
+
+\subsection{Beaucoup plus de victoires, mais moins de coopération}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+Mode & Victoires & Nuls & Défaites & Coopération du LLM & Coop.\ mutuelle & Score adverse \\
+\midrule
+Figé      & 17\,\% & 58\,\% & 26\,\% & 66\,\% & 49\,\% & 2,52 \\
+Adaptatif & 47\,\% & 29\,\% & 23\,\% & 49\,\% & 37\,\% & 2,02 \\
+\bottomrule
+\end{tabular}
+\caption{Issues et comportement (10 rounds, 1 répétition, toutes températures).}
+\label{tab:issues}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.45\textwidth}
+  \includegraphics[width=\linewidth]{figures/issues_fige_T02_rep5.png}
+  \caption{Figé}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.45\textwidth}
+  \includegraphics[width=\linewidth]{figures/issues_adaptatif_T02_rep5.png}
+  \caption{Adaptatif}
+\end{subfigure}
+\caption{Issues des matchs, T = 0,2 et 5 répétitions. Attention : les couleurs
+ne correspondent pas d'un camembert à l'autre, il faut se fier aux étiquettes
+(\emph{win}, \emph{draw}, \emph{loss}).}
+\label{fig:issues}
+\end{figure}
+
+Le LLM adaptatif \textbf{gagne presque trois fois plus de matchs} (47\,\% contre
+17\,\%), mais son score ne progresse pas. Il gagne en trahissant davantage : sa
+coopération passe de 66\,\% à 49\,\%. C'est l'adversaire qui perd des points
+(de 2,52 à 2,02), pas le LLM qui en gagne. C'est la leçon classique d'Axelrod :
+\emph{battre} son adversaire n'est pas \emph{marquer beaucoup}. Les nuls à
+3 points par round (coopération mutuelle) sont remplacés par des victoires à
+plus faible score.
+
+\subsection{La boucle converge vers Merciless}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\textwidth}
+  \includegraphics[width=\linewidth]{figures/evolution_adaptatif_T01.png}
+  \caption{Stratégie de départ $\rightarrow$ stratégie finale}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+  \includegraphics[width=\linewidth]{figures/parite_adaptatif_T01.png}
+  \caption{Score du LLM contre score adverse}
+\end{subfigure}
+\caption{Matchs adaptatifs, T = 0,1, MAPE-K tous les 5 rounds.}
+\label{fig:evolution}
+\end{figure}
+
+Sur l'ensemble des matchs adaptatifs (194 matchs), \textbf{68\,\% finissent en
+Merciless}, quelle que soit la stratégie de départ (figure~\ref{fig:evolution}a).
+L'étape Plan choisit Merciless contre la plupart des adversaires : de 67 à
+90\,\% des cas contre Cooperator, Alternator, Defector, Grudger, Suspicious Tit
+For Tat et Win-Stay Lose-Shift. Elle n'est plus mesurée que contre Prober
+(38\,\%), Tit For 2 Tats (48\,\%) et Tit For Tat (50\,\%). Sur le graphe de
+parité, les victoires (au-dessus de la diagonale) sont nombreuses, et les nuls à
+30--30 (coopération parfaite) se font rares.
+
+\subsection{Effet de la boucle selon l'adversaire}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Adversaire & Meilleure stratégie figée (score) & Gain de MAPE-K & Finit en Merciless \\
+\midrule
+Cooperator             & Merciless (5,00)                       & $+0{,}48$ & 69\,\% \\
+Alternator             & Merciless (3,00)                       & $+0{,}20$ & 72\,\% \\
+Defector               & Merciless (1,00)                       & $+0{,}16$ & 90\,\% \\
+Win-Stay Lose-Shift    & toutes (3,00)                          & $+0{,}11$ & 86\,\% \\
+Tit For 2 Tats         & Generous, Peacemaker, Pragmatic (3,00) & $+0{,}09$ & 48\,\% \\
+Tit For Tat            & Generous, Peacemaker, Pragmatic (3,00) & $-0{,}15$ & 50\,\% \\
+Prober                 & Peacemaker, Pragmatic (2,90)           & $-0{,}16$ & 38\,\% \\
+Suspicious Tit For Tat & Generous (2,68)                        & $-0{,}24$ & 67\,\% \\
+Grudger                & Generous, Peacemaker, Pragmatic (3,00) & $-0{,}45$ & 85\,\% \\
+\bottomrule
+\end{tabular}
+\caption{Gain moyen de l'adaptatif sur le figé (points par round), par
+adversaire (10 rounds, 1 répétition, toutes températures).}
+\label{tab:adversaires}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.45\textwidth}
+  \includegraphics[width=\linewidth]{figures/score_fige_T02_rep5.png}
+  \caption{Figé}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.45\textwidth}
+  \includegraphics[width=\linewidth]{figures/score_adaptatif_T02_rep5.png}
+  \caption{Adaptatif}
+\end{subfigure}
+\caption{Score moyen par adversaire, T = 0,2 et 5 répétitions.}
+\label{fig:adversaires}
+\end{figure}
+
+Le tableau~\ref{tab:adversaires} sépare deux familles d'adversaires :
+\begin{itemize}
+  \item \textbf{Adversaires inconditionnels ou exploitables} (Cooperator,
+        Alternator, Defector) : la boucle \textbf{aide}. Contre Cooperator,
+        passer à Merciless fait monter les 5 derniers rounds à environ 4,3
+        points par round. Contre Defector, passer à Merciless arrête
+        l'exploitation et atteint le meilleur score possible (1 point par round).
+  \item \textbf{Adversaires qui punissent la trahison} (Grudger, Tit For Tat,
+        Suspicious Tit For Tat, Prober) : la boucle \textbf{nuit}. Le cas de
+        Grudger est le plus net. En partant de Generous, le LLM coopère
+        parfaitement pendant 5 rounds (3 points par round), puis l'étape Plan
+        passe quand même à Merciless (5 matchs sur 5). Grudger trahit alors
+        jusqu'à la fin, et la fin de match tombe à 1,8 point par round.
+\end{itemize}
+Les mêmes tendances se retrouvent à 5 répétitions (figure~\ref{fig:adversaires}) :
+$+0{,}42$ contre Cooperator, $-0{,}36$ contre Grudger et Suspicious Tit For Tat,
+$-0{,}30$ contre Tit For Tat.
+
+\subsection{Le comeback}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Mode & Matchs mal commencés & 5 premiers rounds & 5 derniers rounds & Comeback \\
+\midrule
+Figé      & 38 & 0,60 & 0,61 & 5\,\% \\
+Adaptatif & 39 & 0,57 & 0,99 & \textbf{46\,\%} \\
+\bottomrule
+\end{tabular}
+\caption{Matchs dont les 5 premiers rounds sont sous 1,5 point par round
+(10 rounds, MAPE-K tous les 5 rounds, 1 répétition, toutes températures).}
+\label{tab:comeback}
+\end{table}
+
+Parmi les matchs mal commencés, \textbf{46\,\% se terminent en comeback} avec
+MAPE-K, contre 5\,\% sans. Les matchs mal commencés sont presque tous contre
+Defector (31 sur 39), et \textbf{tous} les comebacks observés le sont (18 sur
+18). Le LLM, exploité au début, passe à Merciless et finit à 1,0 point par
+round, le maximum atteignable contre cet adversaire. Le résultat se retrouve à
+toutes les températures (46\,\%, 43\,\% et 50\,\% de comeback à T = 0,1, 0,2 et
+0,9) et à 5 répétitions (40\,\% contre 20\,\%).
+
+Ce comeback reste \textbf{limité en points} : on ne peut pas faire mieux que
+1 point par round contre Defector. Le LLM ne « gagne » donc pas ces matchs : il
+cesse seulement de perdre des points.
+
+\subsection{Fréquence de la boucle MAPE-K}
+
+Robin a comparé une boucle à chaque round ($N = 1$) à une boucle tous les
+5 rounds ($N = 5$) et au mode figé, à T = 0,2, sur les cinq mêmes adversaires.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+ & Figé & $N = 5$ & $N = 1$ \\
+\midrule
+Score moyen (cellules)     & 2,30 & 2,38 & \textbf{2,46} \\
+Écart avec le figé         &      & $+0{,}08$ & $+0{,}16$ \\
+Changements par match      & 0    & 0,47 & 1,54 \\
+Victoires                  & 14\,\% & 26\,\% & 46\,\% \\
+Coopération du LLM         & 68\,\% & 56\,\% & 38\,\% \\
+\midrule
+Cooperator                 & 3,46 & 3,65 & 3,89 \\
+Defector                   & 0,41 & 0,72 & \textbf{0,91} \\
+Suspicious Tit For Tat     & 2,18 & 2,05 & 2,05 \\
+Tit For 2 Tats             & 2,72 & 2,76 & 2,75 \\
+Tit For Tat                & 2,62 & 2,59 & 2,55 \\
+\bottomrule
+\end{tabular}
+\caption{Effet de la période MAPE-K (10 rounds, T = 0,2, 1 répétition,
+20 cellules). En bas, score moyen par adversaire.}
+\label{tab:periode}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{subfigure}{0.48\textwidth}
+  \includegraphics[width=\linewidth]{figures/changements_T02_mapek5.png}
+  \caption{$N = 5$ (9 adversaires)}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+  \includegraphics[width=\linewidth]{figures/changements_T02_mapek1.png}
+  \caption{$N = 1$ (5 adversaires)}
+\end{subfigure}
+\caption{Nombre de changements de stratégie par match, selon l'adversaire.}
+\label{fig:changements}
+\end{figure}
+
+\begin{itemize}
+  \item \textbf{Une boucle plus fréquente réagit plus tôt.} Contre Defector, le
+        LLM détecte l'exploitation dès les premiers rounds et marque
+        0,91 point par round, contre 0,72 avec $N = 5$ et 0,41 en figé. Contre
+        Cooperator, il commence à l'exploiter plus tôt (3,89).
+  \item Ce n'est pas un comeback au sens de notre métrique : avec $N = 1$, la
+        correction intervient \emph{pendant} les 5 premiers rounds. Contre
+        Defector, ceux-ci valent 0,83 point par round avec $N = 1$, contre 0,44
+        avec $N = 5$ : ils passent rarement sous le seuil, et aucun match n'est
+        classé comeback. Le problème est simplement évité plus tôt.
+  \item \textbf{Elle rend aussi le LLM instable} contre les stratégies
+        réciproques. Contre Tit For Tat, il change jusqu'à 7 fois de stratégie
+        en 10 rounds (figure~\ref{fig:changements}) et ne fait pas mieux que le
+        mode figé (2,55 contre 2,62). 81\,\% des matchs avec $N = 1$ finissent
+        en Merciless.
+  \item Ces cinq adversaires ne comptent ni Grudger ni Prober, contre lesquels
+        la boucle nuit le plus : le gain de $+0{,}16$ est donc probablement
+        optimiste.
+  \item Avec $N = 10$ et 10 rounds, la boucle ne tourne jamais : les 18 matchs
+        concernés n'ont aucun changement de stratégie.
+\end{itemize}
+
+\subsection{Matchs de 20 rounds et taille de la fenêtre}
+
+Robin a aussi joué des matchs de 20 rounds (3 cycles MAPE-K), contre
+Cooperator, Defector et Tit For Tat, avec une fenêtre Monitor de 1, 5, 10 ou
+20 rounds.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Fenêtre & 1 & 5 & 10 & 20 \\
+\midrule
+Matchs                   & 12 & 12 & 11 & 11 \\
+Score moyen              & 2,27 & 2,15 & 2,17 & 2,23 \\
+Changements par match    & 0,75 & 0,92 & 0,55 & 0,73 \\
+Finit en Merciless       & 58\,\% & 58\,\% & 55\,\% & 55\,\% \\
+Comeback (matchs mal commencés) & 2/4 & 2/4 & 2/4 & 2/4 \\
+\midrule
+Cooperator               & 3,50 & 3,50 & 3,50 & 3,50 \\
+Defector                 & 0,88 & 0,88 & 0,88 & 0,86 \\
+Tit For Tat              & 2,42 & 2,08 & 2,12 & 2,37 \\
+\bottomrule
+\end{tabular}
+\caption{Matchs de 20 rounds (T = 0,2, MAPE-K tous les 5 rounds). En bas, score
+moyen par adversaire.}
+\label{tab:fenetre}
+\end{table}
+
+\begin{itemize}
+  \item \textbf{La taille de la fenêtre ne change presque rien} : les scores
+        restent entre 2,15 et 2,27, et les résultats contre Cooperator et
+        Defector sont identiques pour les quatre fenêtres. Seul Tit For Tat
+        varie (de 2,08 à 2,42), mais sur 4 matchs par fenêtre seulement.
+  \item \textbf{Plus de cycles ne donne pas plus d'adaptation.} Malgré 3 cycles
+        par match, le LLM change en moyenne moins d'une fois de stratégie. Il
+        n'exploite même plus Cooperator : 3,50 = (5 + 3 + 3 + 3) / 4, ce qui
+        veut dire que seule la stratégie de départ Merciless marque 5 points.
+        Ces matchs ont surtout été joués par gemini-3.1-flash-lite et
+        gemini-3.5-flash-lite (voir la section~\ref{sec:modeles}).
+  \item Il n'y a pas de matchs figés de 20 rounds pour servir de référence :
+        on ne peut pas mesurer le gain de la boucle sur des matchs plus longs.
+\end{itemize}
+
+\subsection{Température, répétitions et reproductibilité}
+
+\begin{itemize}
+  \item \textbf{Température.} Elle n'a pas d'effet visible sur le score
+        (tableau~\ref{tab:global}) : de 2,35 à 2,37 en figé, de 2,33 à 2,40 en
+        adaptatif. Le LLM suit les stratégies de prompt de façon très
+        déterministe, même à T = 0,9.
+  \item \textbf{Variabilité.} Avec 5 répétitions par combinaison (T = 0,2), en
+        mode figé, seulement 10\,\% des cellules donnent des scores différents
+        d'une répétition à l'autre (écart-type moyen 0,01). En adaptatif,
+        50\,\% des cellules varient (écart-type moyen 0,14). La variabilité vient
+        donc surtout des décisions de l'étape Plan, pas du choix des coups.
+  \item \textbf{Reproductibilité entre nous.} Sur les 20 cellules jouées à la
+        fois par Killian et par Robin (T = 0,2), l'écart moyen entre nos deux
+        résultats est de 0,05 point par round en figé (60\,\% de cellules
+        identiques) et de 0,19 en adaptatif (50\,\%). Les résultats figés sont
+        donc bien reproductibles d'une machine à l'autre ; les résultats
+        adaptatifs le sont moins.
+\end{itemize}
+
+\subsection{Effet du modèle}
+\label{sec:modeles}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Modèle & Matchs & Changements par match & Finit en Merciless & Score moyen \\
+\midrule
+gemini-3.1-flash-lite & 33 & 0,30 & 42\,\% & 2,36 \\
+gemini-3.5-flash-lite & 58 & 0,76 & 83\,\% & 2,35 \\
+gemma-4-26b           & 99 & 0,77 & 69\,\% & 2,33 \\
+\bottomrule
+\end{tabular}
+\caption{Matchs adaptatifs de 10 rounds, MAPE-K tous les 5 rounds, selon le
+modèle qui a joué.}
+\label{tab:modeles}
+\end{table}
+
+L'hypothèse « tous les modèles se valent » \textbf{tient pour le score} (de
+2,33 à 2,36), \textbf{mais pas pour le comportement de l'étape Plan} :
+gemini-3.1-flash-lite change 2,5 fois moins souvent de stratégie que les deux
+autres modèles et choisit deux fois moins souvent Merciless. Sur 20 rounds, il
+ne change de stratégie que 0,16 fois par match, contre 0,95 pour
+gemini-3.5-flash-lite. Comme le modèle utilisé dépendait des quotas, il est lié
+à certaines conditions. C'est le cas des matchs de 20 rounds et d'une partie des
+matchs à T = 0,2.
+
+\subsection{Tournoi}
+
+Le seul tournoi enregistré (5 joueurs, T = 0,2, départ en Peacemaker) a été
+joué avec \texttt{mapek\_every} = 10 : la boucle n'a donc jamais tourné. Le LLM,
+resté en Peacemaker, finit \textbf{4\textsuperscript{e} sur 5} (1,65 point par
+round). Defector gagne le tournoi (3,30). Peacemaker coopère face à Defector
+(0 à 50 sur le match) et se fait exploiter par Prober (6 à 46). C'est
+précisément la situation qu'une boucle MAPE-K active devrait corriger, mais
+aucun tournoi n'a été joué avec la boucle active.
+
+% ─────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+\subsection{Réponse à la question}
+
+\textbf{Oui, un LLM auto-adaptatif peut remonter au score quand il détecte
+qu'il joue mal.} Quand le LLM se fait exploiter (par Defector, dans nos
+expériences), la boucle MAPE-K le détecte et change de stratégie : 46\,\% des
+matchs mal commencés se terminent en comeback, contre 5\,\% sans adaptation. Le
+LLM atteint alors le meilleur score possible contre cet adversaire. Avec une
+boucle à chaque round, il réagit encore plus tôt et évite une bonne partie de
+la perte de points (0,91 point par round contre Defector, au lieu de 0,41 en
+figé).
+
+\textbf{Mais ce comeback ne rend pas le LLM meilleur en général.} Sur
+l'ensemble des adversaires, la boucle ne change pas le score moyen (écart
+de 0,00 point par round). La raison est un \textbf{biais marqué de l'étape Plan
+vers Merciless} (68\,\% des matchs adaptatifs finissent dans cette stratégie) :
+le LLM trahit aussi quand tout va bien, ce qui casse la coopération avec les
+stratégies qui punissent la trahison (Grudger, Tit For Tat, Suspicious Tit For
+Tat). Il gagne plus de matchs (47\,\% contre 17\,\%) mais ne marque pas plus de
+points. Dans l'esprit du tournoi d'Axelrod, où seul compte le total de points,
+l'adaptation n'apporte donc pas d'avantage.
+
+\textbf{Stratégies optimales observées} : Merciless contre les adversaires
+inconditionnels (Cooperator, Defector, Alternator) ; une stratégie coopérative
+et réciproque (Pragmatic, Peacemaker ou Generous) contre les stratégies qui
+punissent la trahison. Une boucle idéale devrait donc identifier la famille de
+l'adversaire et \emph{ne pas} quitter une coopération mutuelle qui fonctionne.
+
+\subsection{Limites et pistes}
+
+\begin{itemize}
+  \item \textbf{Matchs courts.} Avec 10 rounds et une boucle tous les 5 rounds,
+        le LLM ne peut changer de stratégie qu'une fois. Les matchs de 20 rounds
+        n'ont été joués que contre 3 adversaires et sans référence figée.
+  \item \textbf{Modèles.} Ils ne se comportent pas pareil dans l'étape Plan, et
+        le modèle utilisé est lié à certaines conditions. Une même série
+        d'expériences devrait être jouée avec un seul modèle.
+  \item \textbf{Échantillons.} Avec 1 répétition, chaque cellule ne contient
+        que 1 à 3 matchs : les écarts de quelques centièmes ne sont pas
+        significatifs. Seules les tendances retrouvées dans plusieurs conditions
+        (par famille d'adversaires, comeback contre Defector, biais vers
+        Merciless) sont solides.
+  \item \textbf{Tournoi.} Aucun tournoi n'a été joué avec une boucle active.
+\end{itemize}
+
+\paragraph{Pistes.} Rendre l'étape Plan plus prudente (ne pas quitter une
+stratégie qui donne un résultat « GOOD », ou garder la coopération mutuelle
+comme objectif). Allonger les matchs et ajouter une référence figée de même
+longueur. Rejouer les tournois avec une boucle active (par exemple tous les
+5 rounds sur 30 rounds). Intégrer les résultats de Léo, qui ne figurent pas
+encore dans ces données.
+
+\end{document}
