@@ -38,7 +38,7 @@ Le programme rejoue le **tournoi d'Axelrod** sur le dilemme du prisonnier itér�
 - **Strategy lab** : consultation, édition et ajout de stratégies de prompt, avec persistance.
 - **Data generator** : balayage de paramètres (produit cartésien) pour produire des données d'expérience.
 - **Historique persistant** (JSON Lines, en ajout seul), replay et export CSV.
-- **Chaîne d'analyse** : tri des résultats par condition de test (`sort_history.py`) et génération de graphiques (`visualizations.py`).
+- **Chaîne d'analyse** : tri des résultats par condition de test (`sort_history.py`) et génération de graphiques (`visualizations.py`, aussi accessible depuis le menu Results history avec `v`).
 - **Tolérance aux pannes de l'API** : relances, bascule automatique entre modèles gratuits, coups de secours.
 
 ### Rappel : le jeu
@@ -190,6 +190,7 @@ Affiche les 20 dernières sessions (date, type, moyenne du LLM, modèle, résum�
 | un numéro | Ouvre la session (réglages, classement, matchs), puis le **replay round par round** d'un match avec la raison de chaque changement de stratégie. |
 | `a` | Liste tous les matchs sauvegardés. |
 | `e` | Exporte tout l'historique vers `results_matches.csv` (une ligne par match du LLM). |
+| `v` | Lance la **visualisation** : génère les graphiques (voir [Visualiser](#visualiser--visualizationspy)). |
 | `f` | Bascule entre listes récentes et listes complètes. |
 | `b` / Entrée | Retour. |
 
@@ -401,7 +402,10 @@ sorted_history/
 
 ## Visualiser : `visualizations.py`
 
-Script indépendant qui lit un CSV de matchs et produit **6 graphiques PNG** (300 dpi).
+Script qui lit un CSV de matchs et produit **6 graphiques PNG** (300 dpi). Il s'utilise de deux façons :
+
+- **depuis le programme** : menu `5` (Results history), puis touche `v` ;
+- **en ligne de commande**, de façon autonome (voir [Lancement](#lancement)), ce qui permet de choisir les CSV ou dossiers à traiter, par exemple ceux de `sorted_history/`.
 
 ### Prérequis
 
@@ -458,7 +462,7 @@ Avec des arguments, les graphiques de chaque CSV sont écrits dans un dossier `p
 ├── matches.py           exécution des 1v1 et tournois, estimation des appels, classement
 ├── records.py           Round, MatchRecord (totaux, épisodes, tendance), Knowledge
 ├── history.py           historique JSON Lines et export CSV
-├── history_view.py      menu Results history : listes, replay, export
+├── history_view.py      menu Results history : listes, replay, export, visualisation (`v`)
 ├── generator.py         menu Data generator : balayage de paramètres
 ├── display.py           affichage en direct des rounds et de la trace MAPE-K
 ├── terminal.py          couleurs, saisie, sparklines

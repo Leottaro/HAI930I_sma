@@ -1,267 +1,325 @@
-\documentclass[11pt,a4paper]{article}
+\documentclass[10pt,a4paper]{article}
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage[french]{babel}
 \usepackage{lmodern}
-\usepackage[margin=5em]{geometry}
+\usepackage[margin=2cm]{geometry}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{subcaption}
 \usepackage{float}
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{enumitem}
 \usepackage{hyperref}
 \hypersetup{hidelinks}
 \usepackage{titlesec}
 
 \setlength{\parindent}{0em}
-\setlength{\parskip}{1em}
-\setlength{\baselineskip}{0em}
-\setlength{\columnsep}{0.5em}
+\setlength{\parskip}{0.45em}
+\setlist{nosep,leftmargin=1.4em}
 \setlength{\tabcolsep}{0.25em}
-\titlespacing*{\section} {0pt}{0.1em}{0em}
-\titlespacing*{\subsection} {0pt}{0.1em}{0em}
+\titlespacing*{\section}{0pt}{0.8em}{0.3em}
+\titlespacing*{\subsection}{0pt}{0.6em}{0.2em}
+\setlength{\textfloatsep}{0.6em}
+\setlength{\floatsep}{0.6em}
+\setlength{\intextsep}{0.6em}
+\captionsetup{font=small,skip=2pt}
 
-\title{HAI930I - Systèmes multi-agents\\Tournoi d'Axelrod : un LLM auto-adaptatif (MAPE-K)\\face à des stratégies déterministes}
+% Passages à compléter ou vérifier par l'équipe (chercher « À COMPLÉTER »).
+\newcommand{\todo}[1]{\textcolor{red}{[À COMPLÉTER : #1]}}
+
+\title{HAI930I - Systèmes multi-agents\\Tournoi d'Axelrod : un LLM auto-adaptatif (MAPE-K) face à des stratégies déterministes}
 \author{Dejean Robin, Hafdane Léo, Texier-Grailhes Killian}
 \date{Novembre 2026}
 
 \begin{document}
 \maketitle
+\vspace{-1.5em}
 
-\pagenumbering{gobble}
-\newpage
-\pagenumbering{arabic}
-
+% ═════════════════════════════════════════════════════════════════════════
 \section{Introduction}
 
-Le projet reproduit le tournoi d'Axelrod sur le dilemme du prisonnier itéré
-(gains : 3/3 si les deux coopèrent, 1/1 si les deux trahissent, 5/0 pour celui
-qui trahit un coopérateur). Un joueur piloté par un LLM y affronte neuf
-stratégies déterministes classiques. À chaque round, le LLM joue selon une
-\emph{stratégie de prompt} (Generous, Pragmatic, Merciless ou Peacemaker). Tous
-les \texttt{mapek\_every} rounds, une boucle MAPE-K (Monitor, Analyze, Plan,
-Execute, Knowledge) peut changer cette stratégie.
+Le \emph{dilemme du prisonnier itéré} est le cadre classique pour étudier la
+coopération entre agents égoïstes : à chaque round, chacun coopère ou trahit
+(gains 3/3 si les deux coopèrent, 1/1 si les deux trahissent, 5/0 pour celui qui
+trahit un coopérateur). Trahir est la meilleure réponse immédiate, mais la
+coopération mutuelle rapporte plus à long terme, et c'est ce que le tournoi
+d'Axelrod a mis en évidence, avec des stratégies simples comme Tit For Tat qui
+battent des stratégies élaborées.
 
-La question posée par le sujet est la suivante : \textbf{un LLM auto-adaptatif
+Notre projet y place un joueur piloté par un LLM (Gemini, via Google ADK) face à
+neuf stratégies déterministes classiques (bibliothèque Axelrod). À chaque round, le LLM joue selon une \emph{stratégie
+  de prompt} (Generous, Pragmatic, Merciless ou Peacemaker). Tous les
+\texttt{mapek\_every} rounds, une boucle \textbf{MAPE-K} (\emph{Monitor,
+  Analyze, Plan, Execute, Knowledge}), issue du calcul autonome, peut changer
+cette stratégie. La question du sujet est : \textbf{un LLM auto-adaptatif
   peut-il remonter au score (« comeback ») quand il détecte qu'il joue mal ?}
 
-% ─────────────────────────────────────────────────────────────────────────
-\section{Paramètres testés}
+Nos objectifs étaient (1) construire un banc d'essai reproductible, (2) mesurer
+l'effet de l'adaptation face à une référence à stratégie figée, (3) identifier
+les paramètres influents, et (4) comprendre pourquoi l'adaptation aide ou non.
 
-Nous avons étudiés les résultats de \textbf{786 matchs} différents en faisant varier les 9 paramètres \ref{tab:parametres}. Nous avons laissé fixe le paramètre \texttt{seuil POOR} à 1.5 point par round qui représente le seuil à partir duquel on considère que le joueur LLM a mal joué. On définit une cellule comme étant un ensemble de paramètres, une configuration.
+% ═════════════════════════════════════════════════════════════════════════
+\section{Conception et implémentation}
 
-\subsection{Variables étudiées}
+\subsection{Architecture}
+
+Le projet est en Python 3.12, avec la bibliothèque Axelrod 4.14 pour les matchs
+et les adversaires, et Google ADK avec un modèle Gemini (par défaut
+\texttt{gemini-3.1-flash-lite}) pour le LLM. Le système comprend : un
+\textbf{moteur de match} (matrice de gains d'Axelrod, historique complet des coups
+et de la stratégie active) ; neuf \textbf{adversaires déterministes}, soit
+inconditionnels (Cooperator, Defector, Alternator), soit réactifs aux coups du
+LLM (Tit For Tat, Tit For 2 Tats, Suspicious Tit For Tat, Grudger, Prober,
+Win-Stay Lose-Shift) ; un \textbf{joueur LLM} qui reçoit à chaque round le prompt
+de sa stratégie active, son score, le taux de coopération adverse et les
+\texttt{history\_shown} derniers coups, puis répond C ou D ; et la \textbf{boucle
+  MAPE-K}. Le LLM ne connaît jamais le nom de l'adversaire : il doit le déduire de
+ses coups. Les agents n'ont aucune mémoire conversationnelle, tout le contexte
+passe dans le prompt.
+
+Les quatre stratégies de prompt fournies sont : \textbf{Generous} (coopère par
+défaut, ne trahit qu'après 3 trahisons consécutives), \textbf{Pragmatic}
+(réciproque façon Tit For Tat, mais pardonne une trahison isolée après 5
+coopérations), \textbf{Merciless} (trahit à chaque round) et \textbf{Peacemaker}
+(rompt les spirales de trahison mutuelle en proposant de coopérer, et avertit par
+un D ponctuel quand elle se fait exploiter). Cela rend les comportements lisibles
+et limite le choix de la boucle à quatre options. La stratégie de départ par
+défaut est Generous, volontairement naïve pour rendre un comeback visible. Côté
+robustesse, un coup illisible ou un appel en échec est remplacé par un coup de
+Tit For Tat, les appels sont relancés jusqu'à 3 fois, puis le programme bascule
+sur un autre modèle gratuit si le quota est épuisé.
+
+\subsection{Boucle MAPE-K}
+
+Tous les \texttt{mapek\_every} rounds, la boucle s'exécute en cinq étapes.
+\textbf{Monitor} (Python) calcule, sur les \texttt{window} derniers rounds, les
+scores moyens du LLM et de l'adversaire, les compare à la fenêtre précédente et
+lève une alerte POOR si la moyenne est sous \texttt{poor\_threshold} (1,5 par
+défaut), GOOD si elle est au moins de 2,5, OK sinon. \textbf{Analyze} (LLM, réponse
+JSON) profile l'adversaire (traître, coopérateur, type Tit For Tat, rancunier,
+alternateur\dots) et juge la performance par rapport à ce qui est atteignable
+contre lui. \textbf{Plan} (LLM, réponse JSON) choisit la stratégie des prochains
+rounds à partir de l'analyse, du catalogue de stratégies, du bilan de chacune
+(rounds joués, points moyens) et des rounds restants. \textbf{Execute} (Python)
+remplace la stratégie active, un nom inconnu la laissant inchangée.
+\textbf{Knowledge} conserve le profil de l'adversaire, les analyses passées et le
+bilan par stratégie du match. Une boucle coûte 2 appels LLM en plus du coup de
+chaque round, soit $\text{turns} + 2\times\lfloor(\text{turns}-1)/\text{mapek\_every}\rfloor$
+appels par match (12 avec les réglages par défaut).
+
+\subsection{Choix de conception}
+
+La \textbf{référence figée} (\texttt{adaptive = non}) permet d'attribuer un gain
+à la boucle plutôt qu'à la stratégie de départ. Les \textbf{adversaires
+  déterministes} (graine Axelrod fixée) rendent le LLM seule source d'aléa, d'où
+plusieurs répétitions par configuration. Le \textbf{comeback} est
+mesuré sur une fenêtre fixe de 5 rounds pour toutes les conditions, et les modes
+sont comparés \textbf{cellule par cellule} (adversaire $\times$ stratégie de
+départ), pour qu'une combinaison plus jouée ne pèse pas plus.
+
+\subsection{Organisation, tests et assistants IA}
+
+\textbf{Chaîne d'expérimentation.} Le \emph{data generator} du programme joue le produit cartésien des paramètres choisis, chaque combinaison étant un match 1v1, et ajoute chaque match à un historique JSON Lines. Chaque membre a généré son propre historique, ce qui permet de répartir les appels d'API. Le script \texttt{sort\_history.py} fusionne ces fichiers, range les matchs par condition de test (même température, mêmes rounds, même réglage MAPE-K, mêmes prompts) et retire les matchs rejoués à l'identique après une interruption. Le script \texttt{visualizations.py} produit ensuite les graphiques de chaque condition. Nous nous sommes également beaucoup aidés de LLM pour développer et mettre en place les différents scripts, afin de passer moins de temps sur l'implémentation et de pouvoir nous concentrer davantage sur l'analyse des résultats.
+
+
+% ═════════════════════════════════════════════════════════════════════════
+\section{Scénarios expérimentaux et résultats}
+
+\subsection{Scénarios et métriques}
+
+Nous avons étudié \textbf{786 matchs} en faisant varier les paramètres du
+tableau~\ref{tab:parametres}, le seuil POOR restant fixe à 1,5 point par round.
+Une \emph{cellule} désigne une configuration. Trois scénarios : (1) adaptatif
+contre figé, pour le gain global de MAPE-K ; (2) balayage des paramètres de la
+boucle et du LLM ; (3) analyse des comebacks, c'est-à-dire des matchs mal
+commencés.
 
 \begin{table}[H]
-  \centering
-  \begin{tabular}{llp{8.2cm}}
+  \centering\small
+  \begin{tabular}{llp{9.3cm}}
     \toprule
-    Paramètre                    & Valeurs testées & Rôle                                                                                                                        \\
+    Paramètre                    & Valeurs       & Rôle                                                                                                                \\
     \midrule
-    \texttt{adaptive}            & oui / non       & boucle MAPE-K active, ou stratégie de départ conservée tout le match (référence \emph{figée})                               \\
-    \texttt{mapek\_every}        & 1, 5, 10        & la boucle tourne tous les $N$ rounds                                                                                        \\
-    \texttt{turns}               & 10, 20          & nombre de rounds par match                                                                                                  \\
-    \texttt{window}              & 1, 5, 10, 20    & fenêtre glissante de l'étape Monitor (en rounds)                                                                            \\
-    \texttt{temperature}         & 0,1, 0,2, 0,9   & température d'échantillonnage du LLM                                                                                        \\
-    \texttt{repetitions}         & 1, 5            & nombre de matchs par combinaison                                                                                            \\
-    \texttt{stratégie de départ} & 4               & Generous, Pragmatic, Merciless, Peacemaker                                                                                  \\
-    \texttt{MAPE-K window}       & 5,10,20         & nombre de rounds précédents pris en compte lors de la décision du MAPE-K                                                    \\
-    \texttt{adversaire}          & 9               & Cooperator, Defector, Tit For Tat, Tit For 2 Tats, Suspicious Tit For Tat, Grudger, Alternator, Prober, Win-Stay Lose-Shift \\
+    \texttt{adaptive}            & oui / non     & boucle MAPE-K active ou stratégie de départ conservée (référence \emph{figée})                                      \\
+    \texttt{mapek\_every}        & 1, 5, 10      & la boucle tourne tous les $N$ rounds                                                                                \\
+    \texttt{turns}               & 10, 20        & nombre de rounds par match                                                                                          \\
+    \texttt{window}              & 1, 5, 10, 20  & fenêtre glissante de l'étape Monitor (rounds)                                                                       \\
+    \texttt{temperature}         & 0,1, 0,2, 0,9 & température d'échantillonnage du LLM                                                                                \\
+    \texttt{repetitions}         & 1, 5          & nombre de matchs par combinaison                                                                                    \\
+    \texttt{stratégie de départ} & 4             & Generous, Pragmatic, Merciless, Peacemaker                                                                          \\
+    \texttt{MAPE-K window}       & 5, 10, 20     & rounds pris en compte par l'étape Plan                                                                              \\
+    \texttt{adversaire}          & 9             & Cooperator, Defector, Tit For Tat, Tit For 2 Tats, Suspicious TFT, Grudger, Alternator, Prober, Win-Stay Lose-Shift \\
     \bottomrule
   \end{tabular}
   \caption{Paramètres que nous avons fait varier.}
   \label{tab:parametres}
 \end{table}
 
-\subsection{Métriques}
+Métriques : \textbf{score moyen par round} (critère principal, entre 0 et 5) ;
+\textbf{issue} du match et \textbf{taux de coopération} ; \textbf{comeback}
+(moyenne des 5 premiers rounds sous 1,5 point par round et moyenne des 5 derniers
+supérieure d'au moins 0,5) ; \textbf{changements de stratégie} et
+\textbf{stratégie finale}.
 
-\begin{itemize}
-  \item \textbf{Score moyen par round} du LLM (entre 0 et 5), le critère
-        principal. Pour comparer deux modes à armes égales, on fait d'abord la
-        moyenne de chaque cellule (adversaire $\times$ stratégie de départ),
-        puis on compare les cellules deux à deux.
-  \item \textbf{Issue} du match (victoire, nul, défaite) et \textbf{taux de
-          coopération}.
-  \item \textbf{Comeback} : moyenne des 5 premiers rounds sous 1,5 point par
-        round (seuil « POOR »), et moyenne des 5 derniers rounds supérieure d'au
-        moins 0,5 point. On utilise une fenêtre de 5 rounds pour toutes les
-        conditions, afin qu'elles restent comparables.
-  \item \textbf{Changements de stratégie} décidés par la boucle, et
-        \textbf{stratégie finale}.
-\end{itemize}
+\subsection{Résultats}
 
-% ─────────────────────────────────────────────────────────────────────────
-\newpage
-\section{Résultats}
-
-% ---------------------------------------------------------------------------
-% Figure 1 : score moyen par adversaire et parité des scores (plots 1 et 3)
-% ---------------------------------------------------------------------------
-\begin{figure}[!h]
+% ---- Figure 1 : plots 1, 3, 4, 10 -----------------------------------------
+\begin{figure}[!ht]
   \centering
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
+  \begin{subfigure}[t]{0.245\linewidth}
     \includegraphics[width=\linewidth]{figures/plot_1_avg_payoff.png}
-    \caption{Score moyen par tour du LLM selon la stratégie de
-      l'adversaire.}
-    \label{fig:avg-payoff}
+    \caption{Score moyen par adversaire.}\label{fig:avg-payoff}
   \end{subfigure}\hfill
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
+  \begin{subfigure}[t]{0.245\linewidth}
     \includegraphics[width=\linewidth]{figures/plot_3_parity.png}
-    \caption{Score total du LLM en fonction du score total de l'adversaire
-      (couleur : issue du match, symbole : adversaire, pointillés :
-      parité).}
-    \label{fig:parity}
+    \caption{Score LLM vs adversaire.}\label{fig:parity}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.245\linewidth}
+    \includegraphics[width=\linewidth]{figures/plot_4_switches.png}
+    \caption{Changements de stratégie.}\label{fig:switches}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.245\linewidth}
+    \includegraphics[width=\linewidth]{figures/plot_10_adaptive_vs_fixed.png}
+    \caption{Adaptatif vs figé.}\label{fig:adaptive-vs-fixed}
   \end{subfigure}
-  \caption[Scores du LLM selon l'adversaire]{Scores du LLM selon la stratégie
-    de l'adversaire. Le meilleur score, et les meilleurs gains, sont obtenus
-    contre \texttt{cooperator} ; le pire contre \texttt{defector}. Les autres
-    adversaires sont répartis de façon plus uniforme.}
+  \caption{Scores selon l'adversaire et activité de MAPE-K.}
   \label{fig:payoff-parity}
 \end{figure}
 
-% ---------------------------------------------------------------------------
-% Figure 2 : activité de MAPE-K et gain de l'adaptation (plots 4 et 10)
-% ---------------------------------------------------------------------------
-\begin{figure}[!h]
-  \centering
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
-    \includegraphics[width=\linewidth]{figures/plot_4_switches.png}
-    \caption{Nombre de changements de stratégie de MAPE-K.}
-    \label{fig:switches}
-  \end{subfigure}\hfill
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
-    \includegraphics[width=\linewidth]{figures/plot_10_adaptive_vs_fixed.png}
-    \caption{Score moyen avec MAPE-K (adaptatif) et sans (stratégie fixe).}
-    \label{fig:adaptive-vs-fixed}
-  \end{subfigure}
-  \caption{Activité de MAPE-K et gain apporté par l'adaptation. On observe une corrélation entre le nombre de changements de stratégie effectués par MAPE-K et l'écart de score avec la version non adaptative. Les adversaires dont la stratégie dépend des actions du LLM, comme \texttt{titfortat}, entraînent davantage de changements de stratégie que les adversaires aux comportements fixes et prévisibles, comme \texttt{cooperator} ou \texttt{defector}. Contre ces stratégies réactives, MAPE-K change fréquemment de stratégie, sans que ces adaptations se traduisent nécessairement par une amélioration du score. À l'inverse, contre les stratégies plus simples, les changements sont moins fréquents et l'adaptation apporte souvent un gain. Nous faisons l'hypothèse que la fenêtre d'observation (window) utilisée par MAPE-K est trop courte pour analyser suffisamment les comportements des adversaires réactifs et identifier des adaptations pertinentes. Cette limite pourrait expliquer pourquoi les changements de stratégie réduisent parfois l'utilité de MAPE-K face à ces adversaires plus complexes.}
-  \label{fig:mapek-activity}
-\end{figure}
+\textbf{L'adversaire domine le score} (fig.~\ref{fig:payoff-parity}a,b) : le
+meilleur score est obtenu contre \texttt{cooperator}, le pire contre
+\texttt{defector}. Le nombre de changements de stratégie est corrélé à l'écart
+avec la version figée (c,d). Face aux adversaires réactifs comme
+\texttt{titfortat}, MAPE-K change souvent de stratégie sans améliorer le score,
+alors que contre les adversaires simples les changements sont rares et l'adaptation
+apporte souvent un gain. Nous supposons que la fenêtre d'observation est trop
+courte pour caractériser un adversaire réactif.
 
-% ---------------------------------------------------------------------------
-% Figure 3 : stratégies sur lesquelles MAPE-K converge (plots 5, 7 et 8)
-% ---------------------------------------------------------------------------
-\newpage
-\begin{figure}[!h]
+% ---- Figure 2 : plots 5, 7, 8 ---------------------------------------------
+\begin{figure}[!ht]
   \centering
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
+  \begin{subfigure}[t]{0.31\linewidth}
     \includegraphics[width=\linewidth]{figures/plot_5_evolution.png}
-    \caption{Stratégie initiale $\rightarrow$ stratégie finale (nombre de
-      parties).}
-    \label{fig:evolution}
+    \caption{Stratégie initiale $\rightarrow$ finale.}\label{fig:evolution}
   \end{subfigure}\hfill
-  \begin{subfigure}[t]{0.48\linewidth}
-    \centering
+  \begin{subfigure}[t]{0.31\linewidth}
     \includegraphics[width=\linewidth]{figures/plot_7_final_strategy_share.png}
-    \caption{Part des parties terminées sur chaque stratégie, par adversaire.}
-    \label{fig:final-share}
-  \end{subfigure}
-
-  \medskip
-  \begin{subfigure}[t]{0.85\linewidth}
-    \centering
+    \caption{Stratégie finale par adversaire.}\label{fig:final-share}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.35\linewidth}
     \includegraphics[width=\linewidth]{figures/plot_8_strategy_ranking.png}
-    \caption{Classement des stratégies finales : score moyen par tour (à
-      gauche) et taux de victoire (à droite).}
-    \label{fig:strategy-ranking}
+    \caption{Score moyen et taux de victoire par stratégie finale.}\label{fig:strategy-ranking}
   \end{subfigure}
-  \caption[Stratégies sur lesquelles MAPE-K converge]{Stratégies sur
-    lesquelles MAPE-K converge. Quels que soient la stratégie de départ et
-    l'adversaire, MAPE-K retombe majoritairement sur \texttt{merciless}, la
-    stratégie qui a le meilleur taux de victoire. Ce n'est pourtant pas celle
-    qui a le meilleur score moyen : contre des adversaires coopératifs,
-    \texttt{generous} fait fortement augmenter sa moyenne, mais elle ne gagne
-    jamais (défaite ou égalité).}
+  \caption{Stratégies sur lesquelles MAPE-K converge.}
   \label{fig:strategy-convergence}
 \end{figure}
 
-% ---------------------------------------------------------------------------
-% Figure 4 : interactions entre paramètres (plot 12)
-% ---------------------------------------------------------------------------
+\textbf{La boucle converge vers Merciless}, quels que soient la stratégie de
+départ et l'adversaire (fig.~\ref{fig:strategy-convergence}). C'est la stratégie au
+meilleur taux de victoire, mais pas au meilleur score moyen : contre des
+adversaires coopératifs, \texttt{generous} fait fortement monter sa moyenne
+sans jamais gagner (défaite ou égalité).
 
-\newpage
-
-\begin{figure}[!h]
+% ---- Figure 3 : plots 12, 16 ----------------------------------------------
+% TODO équipe : la légende de la figure 12 cite mapek_every = 2 et une température
+% de 0,4, absents du tableau 1 (1, 5, 10 et 0,1 / 0,2 / 0,9), ainsi que
+% poor_threshold alors que ce seuil est fixe. À harmoniser.
+\begin{figure}[!ht]
   \centering
-  \includegraphics[width=\linewidth]{figures/plot_12_param_interactions.png}
-  \caption[Influence des paramètres de MAPE-K et du LLM]{Score moyen par tour
-    selon les paires de paramètres (\texttt{mapek\_every}, \texttt{window},
-    \texttt{poor\_threshold}, \texttt{temperature}). Les meilleurs résultats
-    sont obtenus pour \texttt{mapek\_every}\,$=2$ (il vaut probablement mieux
-    déclencher MAPE-K plus souvent), pour une \texttt{window} plus grande, et
-    pour une température du LLM de $0{,}4$. Attention : le nombre de parties
-    par case est faible, ces tendances sont donc à confirmer avec davantage de
-    données.}
-  \label{fig:param-interactions}
+  \begin{subfigure}[t]{0.56\linewidth}
+    \includegraphics[width=\linewidth]{figures/plot_12_param_interactions.png}
+    \caption{Score moyen par paires de paramètres.}\label{fig:param-interactions}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.42\linewidth}
+    \includegraphics[width=\linewidth]{figures/plot_16_comeback_drivers.png}
+    \caption{Comebacks selon l'adversaire et la stratégie.}\label{fig:comebacks}
+  \end{subfigure}
+  \caption{Influence des paramètres et comebacks.}
+  \label{fig:params-comebacks}
 \end{figure}
 
-% ---------------------------------------------------------------------------
-% Figure 5 : comebacks percentages (plot 16)
-% ---------------------------------------------------------------------------
-\begin{figure}[!h]
-  \centering
-  \includegraphics[width=\linewidth]{figures/plot_16_comeback_drivers.png}
-  \caption{Le comeback est presque uniquement possible contre \texttt{Defector} car c'est le seul qui mets dans un premier temps en difficulté sans s'adapter par la suite (reste prévisible). On voit bien que les stratégies nulles (\texttt{Peacemaker} et \texttt{Generous}) comebackent en basculant vers les stratégies fortes (\texttt{Pragmatic} et \texttt{Merciless})}
-  \label{fig:comebacks}
-\end{figure}
+\textbf{Paramètres} (fig.~\ref{fig:params-comebacks}a) : les meilleurs résultats
+sont obtenus avec \texttt{mapek\_every}\,$=2$, une \texttt{window} plus grande et
+une température de $0{,}4$, mais le nombre de parties par case est faible, donc
+ces tendances sont à confirmer. \textbf{Comebacks} (b) : ils sont presque
+uniquement possibles contre \texttt{Defector}, seul adversaire qui met d'abord le
+LLM en difficulté sans s'adapter ensuite. Les stratégies faibles (Peacemaker,
+Generous) remontent en basculant vers les fortes (Pragmatic, Merciless).
 
-% ─────────────────────────────────────────────────────────────────────────
-\section{Conclusion}
+% ═════════════════════════════════════════════════════════════════════════
+\section{Discussion et conclusion}
 
-\subsection{Réponse à la question}
+\subsection{Principaux enseignements}
 
-\textbf{Oui, un LLM auto-adaptatif peut remonter au score quand il détecte
-  qu'il joue mal.} Quand le LLM se fait exploiter (par Defector, dans nos
-expériences), la boucle MAPE-K le détecte et change de stratégie : 46\,\% des
-matchs mal commencés se terminent en comeback, contre 5\,\% sans adaptation. Le
-LLM atteint alors le meilleur score possible contre cet adversaire. Avec une
-boucle à chaque round, il réagit encore plus tôt et évite une bonne partie de
-la perte de points (0,91 point par round contre Defector, au lieu de 0,41 en
-figé).
+\textbf{Oui, un LLM auto-adaptatif peut remonter au score quand il joue mal.}
+Contre Defector, 32\,\% des matchs mal commencés finissent en comeback avec
+MAPE-K, contre 5\,\% sans adaptation. Avec une boucle à chaque round, le score
+est de 0,91 point par round, contre 0,41 en figé, pour un maximum atteignable de 1
+contre un traître inconditionnel.
 
-\textbf{Mais ce comeback ne rend pas le LLM meilleur en général.} Sur
-l'ensemble des adversaires, la boucle ne change pas le score moyen (écart
-de 0,00 point par round). La raison est un \textbf{biais marqué de l'étape Plan
-  vers Merciless} (68\,\% des matchs adaptatifs finissent dans cette stratégie) :
-le LLM trahit aussi quand tout va bien, ce qui casse la coopération avec les
-stratégies qui punissent la trahison (Grudger, Tit For Tat, Suspicious Tit For
-Tat). Il gagne plus de matchs (47\,\% contre 17\,\%) mais ne marque pas plus de
-points. Dans l'esprit du tournoi d'Axelrod, où seul compte le total de points,
-l'adaptation n'apporte donc pas d'avantage.
+\textbf{Mais cela ne le rend pas meilleur en général} : sur l'ensemble des
+adversaires, l'écart de score moyen est de 0,00 point par round. L'étape Plan a un
+\textbf{biais vers Merciless} (68\,\% des matchs adaptatifs y finissent) : le LLM
+trahit même quand tout va bien, ce qui casse la coopération avec les stratégies
+qui punissent (Grudger, Tit For Tat, Suspicious Tit For Tat). Il gagne plus de
+matchs (47\,\% contre 17\,\%) sans marquer plus de points, or dans l'esprit
+d'Axelrod seul le total compte. Monitor est un simple calcul en Python ; ce sont les
+étapes confiées au LLM, en particulier Plan, qui héritent de ses biais. Ce biais est
+cohérent avec la définition de Merciless, qui trahit à chaque round : c'est en
+pratique une stratégie « toujours trahir », qui ne peut jamais perdre un match
+(d'où son meilleur taux de victoire) mais empêche toute coopération mutuelle.
 
+Le comeback n'apparaît que contre Defector, alors que nous
+l'attendions aussi contre Grudger et Suspicious Tit For Tat en partant de Generous :
+contre un rancunier, une trahison initiale ne se rattrape pas.
 \textbf{Stratégies optimales observées} : Merciless contre les adversaires
 inconditionnels (Cooperator, Defector, Alternator) ; une stratégie coopérative
-et réciproque (Pragmatic, Peacemaker ou Generous) contre les stratégies qui
-punissent la trahison. Une boucle idéale devrait donc identifier la famille de
-l'adversaire et \emph{ne pas} quitter une coopération mutuelle qui fonctionne.
+(Pragmatic, Peacemaker ou Generous) contre ceux qui punissent la trahison. Une
+bonne boucle doit donc identifier la famille de l'adversaire et ne pas quitter
+une coopération mutuelle qui fonctionne.
 
-\subsection{Limites et pistes}
+\subsection{Priorités, objectifs non atteints et limites}
 
-\begin{itemize}
-  \item \textbf{Matchs courts.} Avec 10 rounds et une boucle tous les 5 rounds,
-        le LLM ne peut changer de stratégie qu'une fois. Les matchs de 20 rounds
-        n'ont été joués que contre 3 adversaires et sans référence figée.
-  \item \textbf{Modèles.} Ils ne se comportent pas pareil dans l'étape Plan, et
-        le modèle utilisé est lié à certaines conditions. Une même série
-        d'expériences devrait être jouée avec un seul modèle.
-  \item \textbf{Échantillons.} Avec 1 répétition, chaque cellule ne contient
-        que 1 à 3 matchs : les écarts de quelques centièmes ne sont pas
-        significatifs. Seules les tendances retrouvées dans plusieurs conditions
-        (par famille d'adversaires, comeback contre Defector, biais vers
-        Merciless) sont solides.
-  \item \textbf{Tournoi.} Aucun tournoi n'a été joué avec une boucle active.
-\end{itemize}
+Nous avons privilégié une comparaison adaptatif/figé à configuration égale, puis la
+couverture de tous les adversaires et stratégies de départ, au prix de peu de
+répétitions (1 à 3 matchs par configurations). Chaque round étant un appel de modèle, le
+coût a limité le reste : le palier gratuit de Gemini est limité à environ 15
+requêtes par minute, avec un quota journalier. Non atteints : \textbf{aucun tournoi avec boucle active} (le mode tournoi
+existe dans le programme, mais n'a pas été exploité) ; matchs de 20 rounds joués contre 3 adversaires seulement et sans
+référence figée; pas de significativité statistique pour les écarts de
+quelques centièmes. Autres limites : le quota gratuit fait
+basculer automatiquement entre modèles Gemini, que nous avons
+supposé équivalents, ce qui n'est pas vérifié, le tout aurait dû être fait avec un seul modèle (\texttt{gemini-3.1-flash-lite} ou \texttt{gemma-4-26b-a4b-it}) ; les
+adversaires déterministes sont plus faciles à lire qu'un adversaire adaptatif.
 
-\paragraph{Pistes.} Rendre l'étape Plan plus prudente (ne pas quitter une
-stratégie qui donne un résultat « GOOD », ou garder la coopération mutuelle
-comme objectif). Allonger les matchs et ajouter une référence figée de même
-longueur. Rejouer les tournois avec une boucle active (par exemple tous les
-5 rounds sur 30 rounds). Intégrer les résultats de Léo, qui ne figurent pas
-encore dans ces données.
+
+\textbf{Pistes} : rendre le Plan plus prudent (ne pas quitter un état « GOOD »,
+garder la coopération mutuelle comme objectif), allonger la fenêtre
+d'observation et les matchs avec une référence figée de même longueur, rejouer des
+tournois avec boucle active (par exemple tous les 5 rounds sur 30) avec davantage
+de répétitions, et comparer le choix libre du LLM à une règle explicite
+« identifier l'adversaire puis appliquer la meilleure stratégie connue ».
+
+\subsection{Bilan sur le cours HAI930I}
+
+Le projet a rassemblé plusieurs notions du cours : la \textbf{théorie des jeux}
+(aucune stratégie n'est optimale contre tous les adversaires), les
+\textbf{architectures adaptatives} (MAPE-K se transpose à tout système qui doit se
+surveiller et se reconfigurer), les \textbf{agents LLM} (comportements décrits en
+langage naturel, mais biais de décision, coût et variabilité) et la
+\textbf{méthode expérimentale} (référence, répétitions, prudence face aux écarts
+non significatifs), que nous réutiliserons pour évaluer tout système
+multi-agents ou d'apprentissage.
+
+\subsection{Conclusion}
+
+Un LLM auto-adaptatif peut remonter au score quand il joue mal, comme le montre
+le cas \texttt{Defector}, mais notre adaptation ne le rend pas meilleur en moyenne : la
+boucle détecte bien les mauvaises passes, et l'étape Plan, biaisée vers
+Merciless, détruit des coopérations qui fonctionnaient. La vraie question n'est
+pas « faut-il adapter ? » mais « vers quoi adapter, et quand s'arrêter ? ».
 
 \end{document}

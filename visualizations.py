@@ -94,9 +94,10 @@ def make_plots(df: pd.DataFrame, out: Path, label: str | None = None,
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     df = df.copy()
-    df_adaptative = df[df['adaptive'] == True]
+    df['adaptive'] = df['adaptive'] & (df['length'] > df['mapek_every'])
+    df_adaptive = df[df['adaptive'] == True]
 
-    # ---- derived columns -------------------------------------------------
+    # ---- derived columns ------------------------------------------------- 
     if 'adaptive' in df.columns:
         df['adaptive'] = df['adaptive'].astype(str).str.lower().isin(['true', '1', '1.0', 'yes'])
     if _has(df, 'llm_score', 'opp_score'):
@@ -170,8 +171,8 @@ def make_plots(df: pd.DataFrame, out: Path, label: str | None = None,
     # Plot 5: Initial Strategy vs Final Strategy Heatmap
     # -------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(5, 4))
-    if 'initial_strategy' in df_adaptative.columns and 'final_strategy' in df_adaptative.columns:
-        pivot_strat = pd.crosstab(df_adaptative['initial_strategy'], df_adaptative['final_strategy'])
+    if 'initial_strategy' in df_adaptive.columns and 'final_strategy' in df_adaptive.columns:
+        pivot_strat = pd.crosstab(df_adaptive['initial_strategy'], df_adaptive['final_strategy'])
         sns.heatmap(pivot_strat, annot=True, fmt='d', cmap='Blues', cbar=False, ax=ax, annot_kws={'size': 8})
         ax.set_title('Strategy Evolution: Initial -> Final', fontweight='bold')
         ax.set_xlabel('Final Strategy')
@@ -316,8 +317,8 @@ def make_plots(df: pd.DataFrame, out: Path, label: str | None = None,
     # Plot 13: Is switching more often better or just thrashing?
     # -------------------------------------------------------------
     if _has(df, 'n_switches', 'llm_avg'):
-        ycol = 'llm_avg_c' if 'llm_avg_c' in df_adaptative.columns else 'llm_avg'
-        d = df_adaptative.dropna(subset=['n_switches', ycol])
+        ycol = 'llm_avg_c' if 'llm_avg_c' in df_adaptive.columns else 'llm_avg'
+        d = df_adaptive.dropna(subset=['n_switches', ycol])
         if len(d) > 2 and d['n_switches'].nunique() > 1:
             rho = d['n_switches'].corr(d[ycol], method='spearman')
             fig, ax = plt.subplots(figsize=(5.5, 4))
@@ -371,11 +372,11 @@ def make_plots(df: pd.DataFrame, out: Path, label: str | None = None,
     # -------------------------------------------------------------
     # Plot 16: What drives comebacks? Comeback rate vs each parameter
     # -------------------------------------------------------------
-    flag, how, proxy = _comebacks(df_adaptative)
+    flag, how, proxy = _comebacks(df_adaptive)
     if flag is not None:
-        df_adaptative['comeback'] = flag
+        df_adaptive['comeback'] = flag
         # a proxy comeback needs a MAPE-K switch, so fixed runs can never count: leave them out
-        base = df_adaptative[df_adaptative['adaptive']] if proxy and 'adaptive' in df_adaptative.columns else df_adaptative
+        base = df_adaptive[df_adaptive['adaptive']] if proxy and 'adaptive' in df_adaptive.columns else df_adaptive
         panels = []
         for p in ['opponent', 'initial_strategy', 'final_strategy']:
             if p not in base.columns or (p == 'adaptive' and proxy):
