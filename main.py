@@ -71,7 +71,7 @@ def main() -> None:
                 actions[choice]()
                 print(MENU)
         except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
+            print("\nBisouuuuus")
             return
 
 

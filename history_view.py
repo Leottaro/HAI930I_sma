@@ -1,12 +1,16 @@
 """Browse the saved history: sessions, every match, round-by-round replays, CSV export."""
 from __future__ import annotations
 
+from pathlib import Path
 import textwrap
 from typing import Any
+
+import pandas as pd
 
 from history import CSV_FILE, HISTORY_FILE, export_csv, load_sessions
 from records import verdict_text
 from terminal import ask, bold, cyan, dim, green, move_col, note, red, width, yellow
+from visualizations import make_plots
 
 RECENT_SESSIONS = 20  # rows shown by default in the sessions list ([f] shows all)
 RECENT_MATCHES = 30  # same for the "every match" list
@@ -175,7 +179,7 @@ def menu_history() -> None:
         if skipped:
             print(yellow(f"  ! {plural(skipped, 'unreadable line')} in {HISTORY_FILE.name} ignored"))
         toggle = "show recent only" if show_all else "show full lists"
-        print(f"  [number] open session  [a]ll matches  [e]xport CSV  [f] {toggle}  [b]ack")
+        print(f"  [number] open session  [a]ll matches [v]isualize data [e]xport CSV  [f] {toggle}  [b]ack")
         choice = ask("  > ").lower()
         if choice in ("b", ""):
             return
@@ -183,10 +187,14 @@ def menu_history() -> None:
             show_all = not show_all
         elif choice == "a":
             print_all_matches(sessions, show_all)
-        elif choice == "e":
+        elif choice == "e" or choice == "v":
             try:
                 n = export_csv(sessions)
                 print(f"  exported {plural(n, 'match', 'es')} → {CSV_FILE.name}")
+                
+                if choice == "v":
+                    make_plots(pd.read_csv('results_matches.csv'), Path('.'))
+                    print("All individual plots generated successfully with smaller fonts!")
             except OSError as e:
                 print(yellow(f"  ! could not write {CSV_FILE.name} ({e})"))
         elif choice.isdigit():
